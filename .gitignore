@@ -1,0 +1,85 @@
+# ==============================================================================
+# LUMN Windows - Git Ignore Configuration
+# ==============================================================================
+
+# CMake Build & Output Directories
+build/
+bin/
+out/
+CMakeFiles/
+CMakeScripts/
+Testing/
+CMakeCache.txt
+cmake_install.cmake
+CTestTestfile.cmake
+Makefile
+
+# Compiled Object Files, Static & Dynamic Libraries
+*.obj
+*.o
+*.lib
+*.a
+*.pdb
+*.idb
+*.ilk
+*.exp
+
+# Compiled Executables & Binaries
+*.exe
+*.dll
+*.cso
+
+# Diagnostic & Runtime Logs & Dumps
+*.log
+lumn_debug.log
+*.dmp
+*.tlog
+
+# Generated Test Outputs & Visual Artifacts
+*.bmp
+
+# Local Environment & Secrets Safeguards
+.env
+.env.*
+*.key
+*.pem
+
+# Temporary test executables and outputs in scratch
+scratch/*.exe
+scratch/*.obj
+scratch/*.cso
+scratch/__pycache__/
+*.pyc
+
+# IDE, Compiler & Editor Workspaces
+.vs/
+.vscode/
+*.user
+*.suo
+*.VC.db
+*.VC.opendb
+
+# OS-Specific Metadata & Caches
+Thumbs.db
+ehthumbs.db
+[Dd]esktop.ini
+.DS_Store
+.fseventsd
+.background
+
+# External Large Downloads / Installers
+*.dmg
+
+# Proprietary Reference Binaries & Extracted macOS Packages
+extracted/
+scratch/Lumn_arm64
+scratch/Lumn_x86_64
+
+# Local research and agent artifacts
+/tests/
+/scratch/
+/reports/
+/extracted/
+
+# Local logs
+*.log
