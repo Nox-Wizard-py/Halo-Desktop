@@ -829,13 +829,47 @@ void MediaCardRenderer::DrawVectorControls(const media::MediaTrackInfo& trackInf
     }
 }
 
+void MediaCardRenderer::DrawMinimizeButton(CardInteractiveElement hoveredElement, CardInteractiveElement pressedElement)
+{
+    D2D1_RECT_F minRect = GetMinimizeButtonRect();
+    float cx = (minRect.left + minRect.right) * 0.5f;
+    float cy = (minRect.top + minRect.bottom) * 0.5f;
+
+    bool isHovered = (hoveredElement == CardInteractiveElement::MinimizeButton);
+    bool isPressed = (pressedElement == CardInteractiveElement::MinimizeButton);
+
+    if (isPressed)
+    {
+        m_d2dContext->FillEllipse(D2D1::Ellipse(D2D1::Point2F(cx, cy), 9.0f, 9.0f), m_btnPressedBrush.Get());
+    }
+    else if (isHovered)
+    {
+        m_d2dContext->FillEllipse(D2D1::Ellipse(D2D1::Point2F(cx, cy), 9.0f, 9.0f), m_btnHoverBrush.Get());
+    }
+
+    if (isHovered)
+    {
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> rimBrush;
+        m_d2dContext->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.25f), &rimBrush);
+        m_d2dContext->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(cx, cy), 9.0f, 9.0f), rimBrush.Get(), 1.0f);
+    }
+
+    // Downward tray chevron glyph
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> iconBrush;
+    float alpha = isHovered ? 0.95f : 0.45f;
+    m_d2dContext->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, alpha), &iconBrush);
+
+    m_d2dContext->DrawLine(D2D1::Point2F(cx - 3.5f, cy - 1.5f), D2D1::Point2F(cx, cy + 2.0f), iconBrush.Get(), 1.5f);
+    m_d2dContext->DrawLine(D2D1::Point2F(cx, cy + 2.0f), D2D1::Point2F(cx + 3.5f, cy - 1.5f), iconBrush.Get(), 1.5f);
+}
+
 CardInteractiveElement MediaCardRenderer::HitTest(int x, int y, double& outProgressFraction) const
 {
     float fx = static_cast<float>(x) / CARD_SCALE;
     float fy = static_cast<float>(y) / CARD_SCALE;
 
     D2D1_RECT_F prog = GetProgressBarRect();
-    if (fx >= prog.left && fx <= prog.right && fy >= prog.top && fy <= prog.bottom)
+    if (fx >= prog.left && fx <= prog.right && fy >= 64.0f && fy <= 88.0f)
     {
         outProgressFraction = std::clamp(static_cast<double>(fx - prog.left) / (prog.right - prog.left), 0.0, 1.0);
         return CardInteractiveElement::ProgressBar;
@@ -857,6 +891,12 @@ CardInteractiveElement MediaCardRenderer::HitTest(int x, int y, double& outProgr
     if (fx >= next.left && fx <= next.right && fy >= next.top && fy <= next.bottom)
     {
         return CardInteractiveElement::NextButton;
+    }
+
+    D2D1_RECT_F minBtn = GetMinimizeButtonRect();
+    if (fx >= minBtn.left && fx <= minBtn.right && fy >= minBtn.top && fy <= minBtn.bottom)
+    {
+        return CardInteractiveElement::MinimizeButton;
     }
 
     if (fx >= 0.0f && fx <= BASE_CARD_WIDTH && fy >= 0.0f && fy <= BASE_CARD_HEIGHT)
@@ -1008,7 +1048,7 @@ void MediaCardRenderer::Render(const media::MediaTrackInfo& trackInfo,
 
     // 3. Track Title Text (Right Side)
     std::wstring titleText = trackInfo.title.empty() ? L"No Media Active" : trackInfo.title;
-    D2D1_RECT_F titleRect = D2D1::RectF(136.0f, 16.0f, 364.0f, 38.0f);
+    D2D1_RECT_F titleRect = D2D1::RectF(136.0f, 16.0f, 344.0f, 38.0f);
     m_d2dContext->DrawText(
         titleText.c_str(),
         static_cast<UINT32>(titleText.length()),
@@ -1031,7 +1071,7 @@ void MediaCardRenderer::Render(const media::MediaTrackInfo& trackInfo,
             artistText += L" • " + trackInfo.album;
         }
     }
-    D2D1_RECT_F artistRect = D2D1::RectF(136.0f, 38.0f, 364.0f, 58.0f);
+    D2D1_RECT_F artistRect = D2D1::RectF(136.0f, 38.0f, 344.0f, 58.0f);
     m_d2dContext->DrawText(
         artistText.c_str(),
         static_cast<UINT32>(artistText.length()),
@@ -1137,6 +1177,9 @@ void MediaCardRenderer::Render(const media::MediaTrackInfo& trackInfo,
 
     // 6. Playback Control Buttons
     DrawVectorControls(trackInfo, hoveredElement, pressedElement, effectiveIsPlaying);
+
+    // 7. Minimize to Tray Button
+    DrawMinimizeButton(hoveredElement, pressedElement);
 
     m_d2dContext->EndDraw();
     m_swapChain->Present(1, 0);

@@ -1,6 +1,126 @@
 #include "MediaCardWindow.hpp"
 #include <dwmapi.h>
 #include <iostream>
+#include <algorithm>
+#include <cmath>
+
+#pragma comment(lib, "advapi32.lib")
+
+namespace
+{
+
+void EnableDarkModeForMenu(HWND hWnd)
+{
+    HMODULE hUxtheme = LoadLibraryExW(L"uxtheme.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+    if (hUxtheme)
+    {
+        using fnSetPreferredAppMode = int (WINAPI *)(int);
+        auto pSetPreferredAppMode = reinterpret_cast<fnSetPreferredAppMode>(GetProcAddress(hUxtheme, MAKEINTRESOURCEA(135)));
+        if (pSetPreferredAppMode)
+        {
+            pSetPreferredAppMode(2); // 2 = ForceDark
+        }
+        FreeLibrary(hUxtheme);
+    }
+
+    HMODULE hUx = GetModuleHandleW(L"uxtheme.dll");
+    if (hUx)
+    {
+        using fnSetWindowTheme = HRESULT (WINAPI *)(HWND, LPCWSTR, LPCWSTR);
+        auto pSetWindowTheme = reinterpret_cast<fnSetWindowTheme>(GetProcAddress(hUx, "SetWindowTheme"));
+        if (pSetWindowTheme)
+        {
+            pSetWindowTheme(hWnd, L"DarkMode_Explorer", nullptr);
+        }
+    }
+}
+
+HICON CreateHaloTrayIcon()
+{
+    const int size = GetSystemMetrics(SM_CXSMICON);
+    int width = size > 0 ? size : 16;
+    int height = width;
+
+    BITMAPINFO bmi = {};
+    bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bmi.bmiHeader.biWidth = width;
+    bmi.bmiHeader.biHeight = -height; // Top-down
+    bmi.bmiHeader.biPlanes = 1;
+    bmi.bmiHeader.biBitCount = 32;
+    bmi.bmiHeader.biCompression = BI_RGB;
+
+    uint32_t* pixels = nullptr;
+    HDC hdcScreen = GetDC(nullptr);
+    HBITMAP hColor = CreateDIBSection(hdcScreen, &bmi, DIB_RGB_COLORS, reinterpret_cast<void**>(&pixels), nullptr, 0);
+    ReleaseDC(nullptr, hdcScreen);
+
+    if (!hColor || !pixels)
+    {
+        return LoadIconW(nullptr, MAKEINTRESOURCEW(32512));
+    }
+
+    float cx = (width - 1.0f) * 0.5f;
+    float cy = (height - 1.0f) * 0.5f;
+    float outerR = cx - 1.0f;
+    float innerR = outerR * 0.55f;
+
+    for (int y = 0; y < height; ++y)
+    {
+        for (int x = 0; x < width; ++x)
+        {
+            float dx = x - cx;
+            float dy = y - cy;
+            float dist = std::sqrt(dx * dx + dy * dy);
+
+            // Halo ring shape: smooth anti-aliased ring between innerR and outerR
+            float alpha = 0.0f;
+            if (dist <= outerR + 1.0f && dist >= innerR - 1.0f)
+            {
+                float dEdgeOuter = outerR - dist;
+                float dEdgeInner = dist - innerR;
+                float dMin = (std::min)(dEdgeOuter, dEdgeInner);
+                alpha = std::clamp(dMin + 1.0f, 0.0f, 1.0f);
+            }
+            // Small center spindle dot
+            if (dist <= 1.5f)
+            {
+                alpha = (std::max)(alpha, std::clamp(1.5f - dist + 0.5f, 0.0f, 1.0f));
+            }
+
+            if (alpha > 0.0f)
+            {
+                uint8_t a = static_cast<uint8_t>(alpha * 255.0f);
+                // Vibrant cyan-white halo accent (0x00E5FF)
+                uint8_t r = static_cast<uint8_t>(220.0f * alpha);
+                uint8_t g = static_cast<uint8_t>(235.0f * alpha);
+                uint8_t b = static_cast<uint8_t>(255.0f * alpha);
+                pixels[y * width + x] = (static_cast<uint32_t>(a) << 24) |
+                                        (static_cast<uint32_t>(r) << 16) |
+                                        (static_cast<uint32_t>(g) << 8)  |
+                                        static_cast<uint32_t>(b);
+            }
+            else
+            {
+                pixels[y * width + x] = 0;
+            }
+        }
+    }
+
+    HBITMAP hMono = CreateBitmap(width, height, 1, 1, nullptr);
+    ICONINFO ii = {};
+    ii.fIcon = TRUE;
+    ii.hbmColor = hColor;
+    ii.hbmMask = hMono;
+
+    HICON hIcon = CreateIconIndirect(&ii);
+
+    DeleteObject(hColor);
+    DeleteObject(hMono);
+
+    return hIcon ? hIcon : LoadIconW(nullptr, MAKEINTRESOURCEW(32512));
+}
+
+} // namespace
 
 namespace lumn::ui
 {
@@ -78,6 +198,15 @@ bool MediaCardWindow::Initialize(HINSTANCE hInstance, std::shared_ptr<media::Med
         return false;
     }
 
+    // Register Explorer taskbar restart notification
+    m_wmTaskbarCreated = RegisterWindowMessageW(L"TaskbarCreated");
+
+    // Enable native dark mode for popup menus
+    EnableDarkModeForMenu(m_hWnd);
+
+    // Initialize notification area system tray icon
+    InitializeTray();
+
     // Register global toggle hotkeys:
     // Ctrl + Shift + M: Toggle Window Visibility
     // Ctrl + Shift + G: Toggle Liquid Glass vs Phase 4B Procedural Glass
@@ -89,6 +218,8 @@ bool MediaCardWindow::Initialize(HINSTANCE hInstance, std::shared_ptr<media::Med
 
 void MediaCardWindow::Shutdown()
 {
+    RemoveTray();
+
     if (m_hWnd)
     {
         UnregisterHotKey(m_hWnd, 101);
@@ -97,6 +228,154 @@ void MediaCardWindow::Shutdown()
         DestroyWindow(m_hWnd);
         m_hWnd = nullptr;
     }
+}
+
+bool MediaCardWindow::InitializeTray()
+{
+    if (m_trayAdded || !m_hWnd)
+    {
+        return true;
+    }
+
+    m_trayIcon = CreateHaloTrayIcon();
+
+    m_nid = {};
+    m_nid.cbSize = sizeof(NOTIFYICONDATAW);
+    m_nid.hWnd = m_hWnd;
+    m_nid.uID = 1;
+    m_nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
+    m_nid.uCallbackMessage = WM_TRAYICON;
+    m_nid.hIcon = m_trayIcon;
+    wcscpy_s(m_nid.szTip, L"Halo Desktop");
+
+    m_trayAdded = Shell_NotifyIconW(NIM_ADD, &m_nid) != FALSE;
+    return m_trayAdded;
+}
+
+void MediaCardWindow::RemoveTray()
+{
+    if (m_trayAdded)
+    {
+        Shell_NotifyIconW(NIM_DELETE, &m_nid);
+        m_trayAdded = false;
+    }
+    if (m_trayIcon)
+    {
+        DestroyIcon(m_trayIcon);
+        m_trayIcon = nullptr;
+    }
+}
+
+void MediaCardWindow::ShowContextMenu()
+{
+    if (m_isMenuOpen)
+    {
+        return;
+    }
+    m_isMenuOpen = true;
+
+    POINT pt = {};
+    GetCursorPos(&pt);
+
+    HMENU hMenu = CreatePopupMenu();
+    HMENU hPlaybackMenu = CreatePopupMenu();
+
+    // Query current playback status for dynamic labels
+    bool isPlaying = false;
+    if (m_watcher)
+    {
+        auto trackInfo = m_watcher->GetCurrentTrackInfo();
+        isPlaying = m_hasOptimisticState ? m_optimisticIsPlaying : trackInfo.isPlaying;
+    }
+
+    AppendMenuW(hPlaybackMenu, MF_STRING, ID_TRAY_PLAY_PAUSE, isPlaying ? L"Pause" : L"Play");
+    AppendMenuW(hPlaybackMenu, MF_STRING, ID_TRAY_PREV, L"Previous");
+    AppendMenuW(hPlaybackMenu, MF_STRING, ID_TRAY_NEXT, L"Next");
+
+    // Dynamic Show/Hide Halo label
+    std::wstring toggleLabel = m_visible ? L"Hide Halo" : L"Show Halo";
+    AppendMenuW(hMenu, MF_STRING, ID_TRAY_TOGGLE_HALO, toggleLabel.c_str());
+    SetMenuDefaultItem(hMenu, ID_TRAY_TOGGLE_HALO, FALSE); // Bold primary entry
+
+    AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
+
+    // Playback submenu
+    AppendMenuW(hMenu, MF_POPUP, reinterpret_cast<UINT_PTR>(hPlaybackMenu), L"Playback");
+
+    AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
+
+    // Settings
+    AppendMenuW(hMenu, MF_STRING, ID_TRAY_SETTINGS, L"Settings");
+
+    // Start with Windows (checkable)
+    bool isAutoStart = IsStartupEnabled();
+    UINT startFlags = MF_STRING | (isAutoStart ? MF_CHECKED : MF_UNCHECKED);
+    AppendMenuW(hMenu, startFlags, ID_TRAY_STARTUP, L"Start with Windows");
+
+    // About Halo
+    AppendMenuW(hMenu, MF_STRING, ID_TRAY_ABOUT, L"About Halo");
+
+    AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
+
+    // Quit
+    AppendMenuW(hMenu, MF_STRING, ID_TRAY_QUIT, L"Quit");
+
+    // Standard Win32 popup menu tracking recipe
+    SetForegroundWindow(m_hWnd);
+    TrackPopupMenu(hMenu, TPM_RIGHTBUTTON, pt.x, pt.y, 0, m_hWnd, nullptr);
+    PostMessageW(m_hWnd, WM_NULL, 0, 0);
+
+    // Drain any redundant context menu messages queued while the popup menu was open
+    MSG msg = {};
+    while (PeekMessageW(&msg, m_hWnd, WM_CONTEXTMENU, WM_CONTEXTMENU, PM_REMOVE)) {}
+
+    DestroyMenu(hMenu);
+    m_isMenuOpen = false;
+}
+
+bool MediaCardWindow::IsStartupEnabled() const
+{
+    HKEY hKey = nullptr;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Run", 0, KEY_READ, &hKey) == ERROR_SUCCESS)
+    {
+        wchar_t buffer[MAX_PATH] = {};
+        DWORD bufferSize = sizeof(buffer);
+        DWORD type = 0;
+        LSTATUS status = RegQueryValueExW(hKey, L"HaloDesktop", nullptr, &type, reinterpret_cast<LPBYTE>(buffer), &bufferSize);
+        RegCloseKey(hKey);
+        return (status == ERROR_SUCCESS);
+    }
+    return false;
+}
+
+bool MediaCardWindow::SetStartupEnabled(bool enable)
+{
+    HKEY hKey = nullptr;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Run", 0, KEY_SET_VALUE, &hKey) == ERROR_SUCCESS)
+    {
+        LSTATUS status = ERROR_SUCCESS;
+        if (enable)
+        {
+            wchar_t exePath[MAX_PATH] = {};
+            GetModuleFileNameW(nullptr, exePath, MAX_PATH);
+            std::wstring quotedPath = L"\"" + std::wstring(exePath) + L"\"";
+            status = RegSetValueExW(
+                hKey,
+                L"HaloDesktop",
+                0,
+                REG_SZ,
+                reinterpret_cast<const BYTE*>(quotedPath.c_str()),
+                static_cast<DWORD>((quotedPath.length() + 1) * sizeof(wchar_t))
+            );
+        }
+        else
+        {
+            status = RegDeleteValueW(hKey, L"HaloDesktop");
+        }
+        RegCloseKey(hKey);
+        return (status == ERROR_SUCCESS || (!enable && status == ERROR_FILE_NOT_FOUND));
+    }
+    return false;
 }
 
 void MediaCardWindow::Show()
@@ -118,6 +397,7 @@ void MediaCardWindow::Hide()
         m_pressedElement = CardInteractiveElement::None;
         m_isScrubbing = false;
         m_hasOptimisticState = false;
+        m_hasOptimisticSeek = false;
     }
 }
 
@@ -157,12 +437,38 @@ void MediaCardWindow::Render(double currentTimeSec)
 
     bool effectiveIsPlaying = m_hasOptimisticState ? m_optimisticIsPlaying : trackInfo.isPlaying;
 
+    // Reconcile optimistic seek state during IPC transition
+    bool effectiveIsScrubbing = m_isScrubbing;
+    double effectiveFraction = m_scrubFraction;
+
+    if (!m_isScrubbing && m_hasOptimisticSeek)
+    {
+        auto now = std::chrono::steady_clock::now();
+        auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(now - m_optimisticSeekTimestamp).count();
+
+        int64_t targetPos100ns = static_cast<int64_t>(m_optimisticSeekFraction * trackInfo.duration100ns);
+        int64_t currentPos100ns = trackInfo.GetCurrentPosition100ns(now, effectiveIsPlaying);
+        int64_t diff100ns = std::abs(currentPos100ns - targetPos100ns);
+
+        // Reconcile once GSMTC confirms the seek (within 1.5s) or after a 2000ms safety timeout
+        if (diff100ns < 15000000LL || elapsedMs > 2000)
+        {
+            m_hasOptimisticSeek = false;
+        }
+        else
+        {
+            // Hold the seek position until authoritative confirmation arrives
+            effectiveIsScrubbing = true;
+            effectiveFraction = m_optimisticSeekFraction;
+        }
+    }
+
     m_renderer.Render(
         trackInfo,
         m_hoveredElement,
         m_pressedElement,
-        m_isScrubbing,
-        m_scrubFraction,
+        effectiveIsScrubbing,
+        effectiveFraction,
         currentTimeSec,
         effectiveIsPlaying
     );
@@ -211,7 +517,8 @@ LRESULT MediaCardWindow::HandleMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPAR
         if (m_hoveredElement == CardInteractiveElement::ProgressBar ||
             m_hoveredElement == CardInteractiveElement::PreviousButton ||
             m_hoveredElement == CardInteractiveElement::PlayPauseButton ||
-            m_hoveredElement == CardInteractiveElement::NextButton)
+            m_hoveredElement == CardInteractiveElement::NextButton ||
+            m_hoveredElement == CardInteractiveElement::MinimizeButton)
         {
             SetCursor(LoadCursor(nullptr, IDC_HAND));
             return TRUE;
@@ -228,14 +535,16 @@ LRESULT MediaCardWindow::HandleMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPAR
             m_mouseTracking = true;
         }
 
-        int x = LOWORD(lParam);
-        int y = HIWORD(lParam);
+        int x = static_cast<short>(LOWORD(lParam));
+        int y = static_cast<short>(HIWORD(lParam));
         double fraction = 0.0;
         CardInteractiveElement elem = m_renderer.HitTest(x, y, fraction);
 
         if (m_isScrubbing)
         {
-            m_scrubFraction = fraction;
+            D2D1_RECT_F prog = MediaCardRenderer::GetProgressBarRect();
+            float fx = static_cast<float>(x) / MediaCardRenderer::CARD_SCALE;
+            m_scrubFraction = std::clamp<double>(static_cast<double>(fx - prog.left) / (prog.right - prog.left), 0.0, 1.0);
         }
         m_hoveredElement = elem;
         return 0;
@@ -252,13 +561,14 @@ LRESULT MediaCardWindow::HandleMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPAR
 
     case WM_LBUTTONDOWN:
     {
-        int x = LOWORD(lParam);
-        int y = HIWORD(lParam);
+        int x = static_cast<short>(LOWORD(lParam));
+        int y = static_cast<short>(HIWORD(lParam));
         double fraction = 0.0;
         CardInteractiveElement elem = m_renderer.HitTest(x, y, fraction);
 
         if (elem == CardInteractiveElement::ProgressBar)
         {
+            m_hasOptimisticSeek = false;
             m_isScrubbing = true;
             m_scrubFraction = fraction;
             m_pressedElement = elem;
@@ -266,7 +576,8 @@ LRESULT MediaCardWindow::HandleMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPAR
         }
         else if (elem == CardInteractiveElement::PreviousButton ||
                  elem == CardInteractiveElement::PlayPauseButton ||
-                 elem == CardInteractiveElement::NextButton)
+                 elem == CardInteractiveElement::NextButton ||
+                 elem == CardInteractiveElement::MinimizeButton)
         {
             m_pressedElement = elem;
             SetCapture(hWnd);
@@ -283,18 +594,28 @@ LRESULT MediaCardWindow::HandleMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPAR
     case WM_LBUTTONUP:
     {
         ReleaseCapture();
-        int x = LOWORD(lParam);
-        int y = HIWORD(lParam);
+        int x = static_cast<short>(LOWORD(lParam));
+        int y = static_cast<short>(HIWORD(lParam));
         double fraction = 0.0;
         CardInteractiveElement elem = m_renderer.HitTest(x, y, fraction);
 
         if (m_isScrubbing)
         {
             m_isScrubbing = false;
+            m_pressedElement = CardInteractiveElement::None;
+            m_hasOptimisticSeek = true;
+            m_optimisticSeekFraction = m_scrubFraction;
+            m_optimisticSeekTimestamp = std::chrono::steady_clock::now();
             if (m_watcher)
             {
                 m_watcher->SeekTo(m_scrubFraction);
             }
+        }
+        else if (m_pressedElement == CardInteractiveElement::MinimizeButton && elem == CardInteractiveElement::MinimizeButton)
+        {
+            m_pressedElement = CardInteractiveElement::None;
+            Hide();
+            return 0;
         }
         else if (m_pressedElement != CardInteractiveElement::None && elem == m_pressedElement)
         {
@@ -335,6 +656,112 @@ LRESULT MediaCardWindow::HandleMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPAR
         return 0;
     }
 
+    case WM_CLOSE:
+        // Hide window instead of destroying process
+        Hide();
+        return 0;
+
+    case WM_TRAYICON:
+    {
+        UINT evt = LOWORD(lParam);
+        if (evt == WM_LBUTTONUP || evt == NIN_SELECT)
+        {
+            ToggleVisibility();
+            return 0;
+        }
+        else if (evt == WM_RBUTTONUP || evt == WM_CONTEXTMENU)
+        {
+            ShowContextMenu();
+            return 0;
+        }
+        break;
+    }
+
+    case WM_CONTEXTMENU:
+        ShowContextMenu();
+        return 0;
+
+    case WM_COMMAND:
+    {
+        UINT cmdId = LOWORD(wParam);
+        switch (cmdId)
+        {
+        case ID_TRAY_TOGGLE_HALO:
+            ToggleVisibility();
+            return 0;
+
+        case ID_TRAY_PLAY_PAUSE:
+            if (m_watcher)
+            {
+                auto trackInfo = m_watcher->GetCurrentTrackInfo();
+                bool currentPlaying = m_hasOptimisticState ? m_optimisticIsPlaying : trackInfo.isPlaying;
+                bool desiredPlaying = !currentPlaying;
+
+                m_hasOptimisticState = true;
+                m_optimisticIsPlaying = desiredPlaying;
+                m_optimisticTimestamp = std::chrono::steady_clock::now();
+
+                if (desiredPlaying)
+                {
+                    m_watcher->PlayTrack();
+                }
+                else
+                {
+                    m_watcher->PauseTrack();
+                }
+            }
+            return 0;
+
+        case ID_TRAY_PREV:
+            if (m_watcher)
+            {
+                m_watcher->PreviousTrack();
+            }
+            return 0;
+
+        case ID_TRAY_NEXT:
+            if (m_watcher)
+            {
+                m_watcher->NextTrack();
+            }
+            return 0;
+
+        case ID_TRAY_SETTINGS:
+            MessageBoxW(
+                m_hWnd,
+                L"Halo Desktop Settings\n\n"
+                L"Hotkeys:\n"
+                L"• Ctrl+Shift+M: Toggle Media Card\n"
+                L"• Ctrl+Shift+G: Toggle Liquid Glass Mode\n"
+                L"• ESC / Ctrl+Shift+Q: Exit Application\n\n"
+                L"Start with Windows can be toggled directly from this tray menu.",
+                L"Halo Desktop",
+                MB_OK | MB_ICONINFORMATION
+            );
+            return 0;
+
+        case ID_TRAY_STARTUP:
+            SetStartupEnabled(!IsStartupEnabled());
+            return 0;
+
+        case ID_TRAY_ABOUT:
+            MessageBoxW(
+                m_hWnd,
+                L"Halo Desktop v1.0\n\n"
+                L"Fluid liquid-glass media controller and audio-reactive ambient lighting for Windows.\n\n"
+                L"Direct3D 11 & Direct2D native rendering engine.",
+                L"About Halo Desktop",
+                MB_OK | MB_ICONINFORMATION
+            );
+            return 0;
+
+        case ID_TRAY_QUIT:
+            PostQuitMessage(0);
+            return 0;
+        }
+        break;
+    }
+
     case WM_HOTKEY:
         if (wParam == 101) // Ctrl + Shift + M: Toggle Window Visibility
         {
@@ -350,6 +777,15 @@ LRESULT MediaCardWindow::HandleMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPAR
 
     case WM_DESTROY:
         m_hWnd = nullptr;
+        return 0;
+    }
+
+    if (uMsg == m_wmTaskbarCreated && m_wmTaskbarCreated != 0)
+    {
+        if (m_trayAdded)
+        {
+            Shell_NotifyIconW(NIM_ADD, &m_nid);
+        }
         return 0;
     }
 

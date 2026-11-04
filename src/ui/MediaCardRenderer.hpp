@@ -53,7 +53,8 @@ enum class CardInteractiveElement
     ProgressBar,
     PreviousButton,
     PlayPauseButton,
-    NextButton
+    NextButton,
+    MinimizeButton
 };
 
 class MediaCardRenderer
@@ -96,6 +97,7 @@ public:
     static D2D1_RECT_F GetPreviousButtonRect() noexcept { return D2D1::RectF(164.0f, 100.0f, 196.0f, 132.0f); }
     static D2D1_RECT_F GetPlayPauseButtonRect() noexcept { return D2D1::RectF(220.0f, 96.0f, 260.0f, 136.0f); }
     static D2D1_RECT_F GetNextButtonRect() noexcept { return D2D1::RectF(284.0f, 100.0f, 316.0f, 132.0f); }
+    static D2D1_RECT_F GetMinimizeButtonRect() noexcept { return D2D1::RectF(350.0f, 12.0f, 368.0f, 30.0f); }
 
 private:
     bool CreateDeviceAndSwapChain(HWND hWnd);
@@ -112,6 +114,8 @@ private:
                             CardInteractiveElement hoveredElement,
                             CardInteractiveElement pressedElement,
                             bool effectiveIsPlaying);
+    void DrawMinimizeButton(CardInteractiveElement hoveredElement,
+                            CardInteractiveElement pressedElement);
 
     HWND m_hWnd = nullptr;
 

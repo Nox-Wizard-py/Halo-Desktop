@@ -55,6 +55,7 @@ target_link_libraries(LumnOverlay PRIVATE
     user32
     gdi32
     shell32
+    advapi32
     avrt
     ole32
     windowsapp
@@ -80,6 +81,7 @@ enable_testing()
 add_executable(LumnVerification
     tests/test_verification.cpp
     src/ui/MediaCardRenderer.cpp
+    src/ui/MediaCardWindow.cpp
     src/render/BackdropSampler.cpp
     src/media/MediaSessionWatcher.cpp
     src/media/ColorExtractor.cpp
@@ -100,6 +102,7 @@ target_link_libraries(LumnVerification PRIVATE
     user32
     gdi32
     shell32
+    advapi32
     avrt
     ole32
     windowsapp
