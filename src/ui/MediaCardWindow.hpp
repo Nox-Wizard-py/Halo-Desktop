@@ -11,6 +11,7 @@
 #include <shellapi.h>
 #include <memory>
 #include <chrono>
+#include <functional>
 
 #include "MediaCardRenderer.hpp"
 #include "../media/MediaSessionWatcher.hpp"
@@ -57,10 +58,13 @@ public:
         ID_TRAY_PREV        = 2003,
         ID_TRAY_NEXT        = 2004,
         ID_TRAY_SETTINGS    = 2005,
+        ID_TRAY_LIGHTING_STUDIO = 2009,
         ID_TRAY_STARTUP     = 2006,
         ID_TRAY_ABOUT       = 2007,
         ID_TRAY_QUIT        = 2008
     };
+
+    void SetOnOpenLightingStudio(std::function<void()> callback) { m_onOpenLightingStudio = std::move(callback); }
 
     bool IsStartupEnabled() const;
     bool SetStartupEnabled(bool enable);
@@ -92,6 +96,8 @@ private:
     CardInteractiveElement m_pressedElement = CardInteractiveElement::None;
     bool m_isScrubbing = false;
     double m_scrubFraction = 0.0;
+    bool m_isDraggingCard = false;
+    POINT m_dragOffset = { 0, 0 };
 
     // Optimistic playback state feedback and reconciliation (Phase 4A.1)
     bool m_hasOptimisticState = false;
@@ -102,6 +108,8 @@ private:
     bool m_hasOptimisticSeek = false;
     double m_optimisticSeekFraction = 0.0;
     std::chrono::steady_clock::time_point m_optimisticSeekTimestamp{};
+
+    std::function<void()> m_onOpenLightingStudio;
 };
 
 } // namespace lumn::ui

@@ -306,6 +306,7 @@ void MediaCardWindow::ShowContextMenu()
 
     // Settings
     AppendMenuW(hMenu, MF_STRING, ID_TRAY_SETTINGS, L"Settings");
+    AppendMenuW(hMenu, MF_STRING, ID_TRAY_LIGHTING_STUDIO, L"Lighting Studio");
 
     // Start with Windows (checkable)
     bool isAutoStart = IsStartupEnabled();
@@ -396,6 +397,8 @@ void MediaCardWindow::Hide()
         m_hoveredElement = CardInteractiveElement::None;
         m_pressedElement = CardInteractiveElement::None;
         m_isScrubbing = false;
+        m_isDraggingCard = false;
+        ReleaseCapture();
         m_hasOptimisticState = false;
         m_hasOptimisticSeek = false;
     }
@@ -535,6 +538,15 @@ LRESULT MediaCardWindow::HandleMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPAR
             m_mouseTracking = true;
         }
 
+        if (m_isDraggingCard)
+        {
+            POINT pt = {};
+            GetCursorPos(&pt);
+            SetWindowPos(hWnd, nullptr, pt.x - m_dragOffset.x, pt.y - m_dragOffset.y, 0, 0,
+                         SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+            return 0;
+        }
+
         int x = static_cast<short>(LOWORD(lParam));
         int y = static_cast<short>(HIWORD(lParam));
         double fraction = 0.0;
@@ -553,7 +565,7 @@ LRESULT MediaCardWindow::HandleMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPAR
     case WM_MOUSELEAVE:
         m_mouseTracking = false;
         m_hoveredElement = CardInteractiveElement::None;
-        if (!m_isScrubbing)
+        if (!m_isScrubbing && !m_isDraggingCard)
         {
             m_pressedElement = CardInteractiveElement::None;
         }
@@ -584,16 +596,32 @@ LRESULT MediaCardWindow::HandleMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPAR
         }
         else if (elem == CardInteractiveElement::CardBody)
         {
-            // Allow smooth window dragging by clicking anywhere on the card body
-            ReleaseCapture();
-            SendMessageW(hWnd, WM_NCLBUTTONDOWN, HTCAPTION, 0);
+            // Non-blocking window dragging: avoids modal Win32 WM_NCLBUTTONDOWN/SC_MOVE loop
+            m_isDraggingCard = true;
+            m_pressedElement = elem;
+            SetCapture(hWnd);
+            POINT pt = {};
+            GetCursorPos(&pt);
+            RECT rc = {};
+            GetWindowRect(hWnd, &rc);
+            m_dragOffset.x = pt.x - rc.left;
+            m_dragOffset.y = pt.y - rc.top;
         }
         return 0;
     }
 
     case WM_LBUTTONUP:
     {
+        bool wasDragging = m_isDraggingCard;
+        m_isDraggingCard = false;
         ReleaseCapture();
+
+        if (wasDragging)
+        {
+            m_pressedElement = CardInteractiveElement::None;
+            return 0;
+        }
+
         int x = static_cast<short>(LOWORD(lParam));
         int y = static_cast<short>(HIWORD(lParam));
         double fraction = 0.0;
@@ -738,6 +766,13 @@ LRESULT MediaCardWindow::HandleMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPAR
                 L"Halo Desktop",
                 MB_OK | MB_ICONINFORMATION
             );
+            return 0;
+
+        case ID_TRAY_LIGHTING_STUDIO:
+            if (m_onOpenLightingStudio)
+            {
+                m_onOpenLightingStudio();
+            }
             return 0;
 
         case ID_TRAY_STARTUP:

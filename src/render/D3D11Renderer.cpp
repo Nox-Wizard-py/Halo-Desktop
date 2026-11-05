@@ -29,20 +29,30 @@ D3D11Renderer::D3D11Renderer()
     m_constants.notchDimensions[0] = 0.0f; // Windows displays have no camera notch
     m_constants.notchDimensions[1] = 0.0f;
 
-    // Default vibrant palette: Electric Cyan (Hot) to Neon Purple (Deep)
-    m_constants.hotColor[0] = 0.20f;
+    // Default vibrant palette: Electric Cyan (Hot), Midnight Indigo (Deep), Neon Purple (Color2), Luminous Magenta (Color3)
+    m_constants.hotColor[0] = 0.00f;
     m_constants.hotColor[1] = 0.85f;
     m_constants.hotColor[2] = 1.00f;
     m_constants.hotColor[3] = 1.00f;
 
-    m_constants.deepColor[0] = 0.55f;
-    m_constants.deepColor[1] = 0.10f;
-    m_constants.deepColor[2] = 0.95f;
+    m_constants.deepColor[0] = 0.12f;
+    m_constants.deepColor[1] = 0.04f;
+    m_constants.deepColor[2] = 0.35f;
     m_constants.deepColor[3] = 1.00f;
+
+    m_constants.color2[0] = 0.60f;
+    m_constants.color2[1] = 0.15f;
+    m_constants.color2[2] = 1.00f;
+    m_constants.color2[3] = 1.00f;
+
+    m_constants.color3[0] = 0.95f;
+    m_constants.color3[1] = 0.25f;
+    m_constants.color3[2] = 0.65f;
+    m_constants.color3[3] = 1.00f;
 
     m_constants.time = 0.0f;
     m_constants.phase = 0.0f;
-    m_constants.balance = 0.60f;
+    m_constants.balance = 0.50f;
     m_constants.bloom = 0.0f;
     m_constants.cornerRadius = 0.0f; // 0.0 for rectangular Windows monitors
     m_constants.thicknessMul = 1.0f;
@@ -516,12 +526,15 @@ void D3D11Renderer::SetColors(const float hot[4], const float deep[4])
     }
 }
 
-void D3D11Renderer::SetTargetPalette(const float hot[4], const float deep[4], float balance, uint64_t generation)
+void D3D11Renderer::SetTargetPalette(const float hot[4], const float deep[4], const float color2[4], const float color3[4], float balance, uint64_t generation)
 {
     bool colorsChanged = false;
     for (int i = 0; i < 4; ++i)
     {
-        if (std::abs(m_targetHot[i] - hot[i]) > 0.001f || std::abs(m_targetDeep[i] - deep[i]) > 0.001f)
+        if (std::abs(m_targetHot[i] - hot[i]) > 0.001f ||
+            std::abs(m_targetDeep[i] - deep[i]) > 0.001f ||
+            std::abs(m_targetColor2[i] - color2[i]) > 0.001f ||
+            std::abs(m_targetColor3[i] - color3[i]) > 0.001f)
         {
             colorsChanged = true;
             break;
@@ -539,10 +552,12 @@ void D3D11Renderer::SetTargetPalette(const float hot[4], const float deep[4], fl
         {
             m_targetHot[i] = hot[i];
             m_targetDeep[i] = deep[i];
+            m_targetColor2[i] = color2[i];
+            m_targetColor3[i] = color3[i];
         }
         m_targetBalance = balance;
         m_isPaletteTransitioning = true;
-        LogMsg("[D3D11Renderer][Gen " + std::to_string(generation) + "] Palette transition started.");
+        LogMsg("[D3D11Renderer][Gen " + std::to_string(generation) + "] 4-color palette transition started.");
     }
     else if (colorsChanged && generation == 0)
     {
@@ -550,10 +565,19 @@ void D3D11Renderer::SetTargetPalette(const float hot[4], const float deep[4], fl
         {
             m_targetHot[i] = hot[i];
             m_targetDeep[i] = deep[i];
+            m_targetColor2[i] = color2[i];
+            m_targetColor3[i] = color3[i];
         }
         m_targetBalance = balance;
         m_isPaletteTransitioning = true;
     }
+}
+
+void D3D11Renderer::SetTargetPalette(const float hot[4], const float deep[4], float balance, uint64_t generation)
+{
+    float c2[4] = { (hot[0] + deep[0]) * 0.5f, (hot[1] + deep[1]) * 0.5f, (hot[2] + deep[2]) * 0.5f, 1.0f };
+    float c3[4] = { std::min(hot[0] + 0.15f, 1.0f), std::min(hot[1] + 0.15f, 1.0f), std::min(hot[2] + 0.15f, 1.0f), 1.0f };
+    SetTargetPalette(hot, deep, c2, c3, balance, generation);
 }
 
 void D3D11Renderer::Render(float time, float phase, float bloom, float audioLevel, float beatPulse)
@@ -574,20 +598,24 @@ void D3D11Renderer::Render(float time, float phase, float bloom, float audioLeve
     // Rate: ~9% per 60 Hz frame tick (decay constant ~5.8)
     const float lerpFactor = 1.0f - std::exp(-dt * 5.8f);
 
-    float diffHot = 0.0f, diffDeep = 0.0f;
+    float diff = 0.0f;
     for (int i = 0; i < 4; ++i)
     {
-        diffHot += std::abs(m_targetHot[i] - m_constants.hotColor[i]);
-        diffDeep += std::abs(m_targetDeep[i] - m_constants.deepColor[i]);
+        diff += std::abs(m_targetHot[i] - m_constants.hotColor[i]);
+        diff += std::abs(m_targetDeep[i] - m_constants.deepColor[i]);
+        diff += std::abs(m_targetColor2[i] - m_constants.color2[i]);
+        diff += std::abs(m_targetColor3[i] - m_constants.color3[i]);
     }
 
-    if (diffHot + diffDeep < 0.002f)
+    if (diff < 0.004f)
     {
         // Snap to target when within threshold
         for (int i = 0; i < 4; ++i)
         {
             m_constants.hotColor[i] = m_targetHot[i];
             m_constants.deepColor[i] = m_targetDeep[i];
+            m_constants.color2[i] = m_targetColor2[i];
+            m_constants.color3[i] = m_targetColor3[i];
         }
         m_constants.balance = m_targetBalance;
         if (m_isPaletteTransitioning)
@@ -602,6 +630,8 @@ void D3D11Renderer::Render(float time, float phase, float bloom, float audioLeve
         {
             m_constants.hotColor[i] += (m_targetHot[i] - m_constants.hotColor[i]) * lerpFactor;
             m_constants.deepColor[i] += (m_targetDeep[i] - m_constants.deepColor[i]) * lerpFactor;
+            m_constants.color2[i] += (m_targetColor2[i] - m_constants.color2[i]) * lerpFactor;
+            m_constants.color3[i] += (m_targetColor3[i] - m_constants.color3[i]) * lerpFactor;
         }
         m_constants.balance += (m_targetBalance - m_constants.balance) * lerpFactor;
     }

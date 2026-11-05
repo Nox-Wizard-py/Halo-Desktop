@@ -36,6 +36,9 @@ set(SOURCES
     src/ui/MediaCardRenderer.cpp
     src/ui/MediaCardWindow.hpp
     src/ui/MediaCardWindow.cpp
+    src/settings/LightingSettings.hpp
+    src/ui/LightingStudioWindow.hpp
+    src/ui/LightingStudioWindow.cpp
 )
 
 add_executable(LumnOverlay WIN32 ${SOURCES})
@@ -62,6 +65,8 @@ target_link_libraries(LumnOverlay PRIVATE
     windowscodecs
     shlwapi
     dwmapi
+    comctl32
+    comdlg32
 )
 
 # Ensure plasmaRim.hlsl and liquidGlass.hlsl are copied alongside the built executable
@@ -82,9 +87,11 @@ add_executable(LumnVerification
     tests/test_verification.cpp
     src/ui/MediaCardRenderer.cpp
     src/ui/MediaCardWindow.cpp
+    src/ui/LightingStudioWindow.cpp
     src/render/BackdropSampler.cpp
     src/media/MediaSessionWatcher.cpp
     src/media/ColorExtractor.cpp
+    src/audio/MusicSyncClock.cpp
 )
 
 target_include_directories(LumnVerification PRIVATE
@@ -109,6 +116,8 @@ target_link_libraries(LumnVerification PRIVATE
     windowscodecs
     shlwapi
     dwmapi
+    comctl32
+    comdlg32
 )
 
 add_test(NAME VerificationTest COMMAND LumnVerification)

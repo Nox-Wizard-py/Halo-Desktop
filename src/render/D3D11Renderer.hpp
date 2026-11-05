@@ -19,13 +19,15 @@ namespace lumn::render
 {
 
 // Constant buffer layout matching cbuffer RimConstants in plasmaRim.hlsl
-// Must be 16-byte aligned and multiple of 16 bytes (total 80 bytes)
+// Must be 16-byte aligned and multiple of 16 bytes (total 128 bytes)
 struct alignas(16) RimConstants
 {
     float screenSize[2];      // Physical screen dimensions in pixels (e.g. 2560, 1440)
     float notchDimensions[2]; // Hardcoded to (0, 0) on Windows displays
-    float hotColor[4];        // High-energy rim color (RGBA float)
-    float deepColor[4];       // Low-energy bass rim color (RGBA float)
+    float hotColor[4];        // Primary vibrant rim accent (Color 1 - RGBA float)
+    float deepColor[4];       // Deep foundation rim color (Color 4 - RGBA float)
+    float color2[4];          // Secondary contrasting accent (Color 2 - RGBA float)
+    float color3[4];          // Tertiary luminous highlight (Color 3 - RGBA float)
     float time;               // Continuous animation time in seconds
     float phase;              // Beat-synchronized phase [0.0, 1.0]
     float balance;            // Chromatic balance ratio [0.0, 1.0]
@@ -35,10 +37,10 @@ struct alignas(16) RimConstants
     float glowMultiplier;     // Overall glow multiplier (default 1.0)
     float audioLevel;         // Continuous dynamic normalized audio energy [0.0, 1.0]
     float beatPulse;          // Instantaneous beat transient impulse [0.0, 1.0]
-    float padding[3];         // 16-byte alignment padding (total 96 bytes)
+    float padding[3];         // 16-byte alignment padding (total 128 bytes)
 };
 
-static_assert(sizeof(RimConstants) == 96, "RimConstants size must be exactly 96 bytes");
+static_assert(sizeof(RimConstants) == 128, "RimConstants size must be exactly 128 bytes");
 
 class D3D11Renderer
 {
@@ -56,6 +58,7 @@ public:
     void Render(float time, float phase, float bloom, float audioLevel = 0.0f, float beatPulse = 0.0f);
 
     void SetColors(const float hot[4], const float deep[4]);
+    void SetTargetPalette(const float hot[4], const float deep[4], const float color2[4], const float color3[4], float balance, uint64_t generation = 0);
     void SetTargetPalette(const float hot[4], const float deep[4], float balance, uint64_t generation = 0);
     void SetCornerRadius(float radius) noexcept { m_constants.cornerRadius = radius; }
     void SetThickness(float thickness) noexcept { m_constants.thicknessMul = thickness; }
@@ -93,9 +96,11 @@ private:
     D3D11_VIEWPORT m_viewport{};
     RimConstants m_constants{};
 
-    float m_targetHot[4] = { 0.20f, 0.85f, 1.00f, 1.00f };
-    float m_targetDeep[4] = { 0.55f, 0.10f, 0.95f, 1.00f };
-    float m_targetBalance = 0.60f;
+    float m_targetHot[4]    = { 0.00f, 0.85f, 1.00f, 1.00f };
+    float m_targetDeep[4]   = { 0.12f, 0.04f, 0.35f, 1.00f };
+    float m_targetColor2[4] = { 0.60f, 0.15f, 1.00f, 1.00f };
+    float m_targetColor3[4] = { 0.95f, 0.25f, 0.65f, 1.00f };
+    float m_targetBalance   = 0.50f;
     float m_lastRenderTime = 0.0f;
     uint64_t m_activePaletteGeneration = 0;
     bool m_isPaletteTransitioning = false;
