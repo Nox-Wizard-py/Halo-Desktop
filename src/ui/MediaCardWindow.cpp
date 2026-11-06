@@ -409,10 +409,18 @@ void MediaCardWindow::ToggleVisibility()
     if (m_visible)
     {
         Hide();
+        if (m_onToggleHalo)
+        {
+            m_onToggleHalo(false);
+        }
     }
     else
     {
         Show();
+        if (m_onToggleHalo)
+        {
+            m_onToggleHalo(true);
+        }
     }
 }
 

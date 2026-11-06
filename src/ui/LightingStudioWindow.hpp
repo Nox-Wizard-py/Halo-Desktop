@@ -67,6 +67,7 @@ private:
     Microsoft::WRL::ComPtr<IDWriteTextFormat> m_tfLabel;
     Microsoft::WRL::ComPtr<IDWriteTextFormat> m_tfLabelCenter;
     Microsoft::WRL::ComPtr<IDWriteTextFormat> m_tfSmall;
+    Microsoft::WRL::ComPtr<IDWriteTextFormat> m_tfSmallCenter;
     Microsoft::WRL::ComPtr<IDWriteTextFormat> m_tfMono;
 
     // Solid color brush
@@ -74,7 +75,7 @@ private:
 
     // Design-time DIP dimensions
     static constexpr float DESIGN_WIDTH = 440.0f;
-    static constexpr float DESIGN_HEIGHT = 636.0f;
+    static constexpr float DESIGN_HEIGHT = 640.0f;
 
     // Interactive Color Wheel Bitmap
     static constexpr uint32_t WHEEL_SIZE = 136;

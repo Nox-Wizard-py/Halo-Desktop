@@ -30,6 +30,10 @@ public:
 
     bool ProcessMessages();
 
+    void Show();
+    void Hide();
+    bool IsVisible() const noexcept;
+
     HWND GetHandle() const noexcept { return m_hwnd; }
     uint32_t GetWidth() const noexcept { return m_width; }
     uint32_t GetHeight() const noexcept { return m_height; }

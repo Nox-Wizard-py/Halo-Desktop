@@ -65,6 +65,7 @@ public:
     };
 
     void SetOnOpenLightingStudio(std::function<void()> callback) { m_onOpenLightingStudio = std::move(callback); }
+    void SetOnToggleHalo(std::function<void(bool visible)> callback) { m_onToggleHalo = std::move(callback); }
 
     bool IsStartupEnabled() const;
     bool SetStartupEnabled(bool enable);
@@ -110,6 +111,7 @@ private:
     std::chrono::steady_clock::time_point m_optimisticSeekTimestamp{};
 
     std::function<void()> m_onOpenLightingStudio;
+    std::function<void(bool visible)> m_onToggleHalo;
 };
 
 } // namespace lumn::ui

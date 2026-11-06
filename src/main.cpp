@@ -42,6 +42,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, PWSTR /*pC
     }
 
     std::ofstream logFile("lumn_debug.log", std::ios::app);
+    logFile << std::unitbuf;
     logFile << "[Lumn] Launched. Raw command line: " << GetCommandLineA() << "\n";
 
     // Parse command-line arguments using standard GetCommandLineW
@@ -50,6 +51,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, PWSTR /*pC
     float customThickness = 1.0f;
     bool showCard = true; // Phase 4A Floating Media Card enabled by default
     bool useLiquidGlass = true; // Phase 4B.1 Liquid Glass prototype enabled by default
+    int forcedCorner = -1; // -1 = Random (normal operation), 0..3 = Deterministic corner override
 
     int argc = 0;
     LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
@@ -94,6 +96,11 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, PWSTR /*pC
             else if (arg == L"--liquid-glass")
             {
                 useLiquidGlass = true;
+            }
+            else if (arg == L"--corner" && i + 1 < argc)
+            {
+                forcedCorner = std::stoi(argv[++i]);
+                logFile << "[Lumn] Deterministic forced corner = " << forcedCorner << "\n";
             }
         }
         LocalFree(argv);
@@ -177,10 +184,25 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, PWSTR /*pC
         lightingStudio.Show();
     });
 
+    mediaCard.SetOnToggleHalo([&window, &renderer, forcedCorner](bool visible) {
+        if (visible)
+        {
+            window.Show();
+            renderer.TriggerActivationAnimation(forcedCorner);
+        }
+        else
+        {
+            window.Hide();
+        }
+    });
+
     // High-resolution timer setup
     LARGE_INTEGER frequency, startTime, currentTime;
     QueryPerformanceFrequency(&frequency);
     QueryPerformanceCounter(&startTime);
+
+    // Trigger initial activation reveal animation right as render loop begins
+    renderer.TriggerActivationAnimation(forcedCorner);
 
     // Animation & message loop
     logFile << "[Lumn] Entering animation loop. IsRunning=" << window.IsRunning() << " testExitAfter=" << testExitAfter << std::endl;
@@ -230,9 +252,22 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, PWSTR /*pC
         }
         float animTime = static_cast<float>(accumulatedAnimTime);
 
-        // Upload palette to renderer (Custom 3-color palette or Artwork auto-extraction)
-        if (lightingConfig.colorSource == lumn::settings::ColorSourceMode::Custom)
+        // Upload palette to renderer (Artwork, Mixed, or Solid)
+        if (lightingConfig.colorSource == lumn::settings::ColorSourceMode::Solid)
         {
+            // Solid mode: uniform single color across the entire perimeter (no blending with other colors)
+            renderer.SetTargetPalette(
+                lightingConfig.solidColor,
+                lightingConfig.solidColor,
+                lightingConfig.solidColor,
+                lightingConfig.solidColor,
+                0.50f,
+                0
+            );
+        }
+        else if (lightingConfig.colorSource == lumn::settings::ColorSourceMode::Mixed)
+        {
+            // Mixed mode: smooth interpolation between Color 2 -> Color 1 -> Color 3
             float deep[4] = {
                 lightingConfig.color2[0] * 0.35f,
                 lightingConfig.color2[1] * 0.35f,
@@ -260,8 +295,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, PWSTR /*pC
             );
         }
 
-        // Audio clock synchronizes phase (freezes phase and position when paused)
-        lumn::audio::AudioRenderState audioState = clock->Tick(elapsedSeconds * speedMultiplier, trackInfo.isPlaying);
+        // Audio clock synchronizes phase (preserves phase across speed changes and freezes when paused)
+        lumn::audio::AudioRenderState audioState = clock->Tick(elapsedSeconds, trackInfo.isPlaying, speedMultiplier);
 
         // Render pass-through rim lighting overlay
         renderer.Render(animTime, audioState.phase, audioState.bloom, audioState.energy, audioState.beatPulse);

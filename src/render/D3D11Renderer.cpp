@@ -5,6 +5,7 @@
 #include <iostream>
 #include <fstream>
 #include <vector>
+#include <random>
 
 #pragma comment(lib, "d3d11.lib")
 #pragma comment(lib, "dxgi.lib")
@@ -17,7 +18,7 @@ namespace lumn::render
 static void LogMsg(const std::string& msg)
 {
     std::ofstream f("lumn_debug.log", std::ios::app);
-    f << msg << std::endl;
+    f << std::unitbuf << msg << std::endl;
     OutputDebugStringA(msg.c_str());
 }
 
@@ -59,9 +60,9 @@ D3D11Renderer::D3D11Renderer()
     m_constants.glowMultiplier = 1.0f;
     m_constants.audioLevel = 0.0f;
     m_constants.beatPulse = 0.0f;
-    m_constants.padding[0] = 0.0f;
-    m_constants.padding[1] = 0.0f;
-    m_constants.padding[2] = 0.0f;
+    m_constants.revealProgress = 1.0f;
+    m_constants.revealCorner = 0.0f;
+    m_constants.revealPadding = 0.0f;
 }
 
 D3D11Renderer::~D3D11Renderer()
@@ -126,6 +127,34 @@ bool D3D11Renderer::Initialize(HWND hWnd, uint32_t width, uint32_t height, const
 
     LogMsg("[D3D11Renderer] Initialization successful.");
     return true;
+}
+
+void D3D11Renderer::TriggerActivationAnimation(int forcedCorner)
+{
+    if (forcedCorner >= 0 && forcedCorner <= 3)
+    {
+        m_revealCorner = static_cast<float>(forcedCorner);
+    }
+    else
+    {
+        static std::random_device rd;
+        static std::mt19937 gen(rd());
+        std::uniform_int_distribution<int> dist(0, 3);
+        int prev = (m_revealCorner >= 0.0f && m_revealCorner <= 3.0f) ? static_cast<int>(m_revealCorner + 0.5f) : -1;
+        int next = dist(gen);
+        if (prev >= 0 && next == prev)
+        {
+            next = (next + 1 + (dist(gen) % 3)) % 4; // Guarantee a distinct corner on successive triggers
+        }
+        m_revealCorner = static_cast<float>(next);
+    }
+
+    m_revealProgress = 0.0f;
+    m_isRevealing = true;
+    m_revealStartTime = std::chrono::steady_clock::now();
+    m_hasRevealStartTime = true;
+    m_hasPhaseAnchor = false;
+    LogMsg("[D3D11Renderer] Organic activation reveal triggered from corner " + std::to_string(static_cast<int>(m_revealCorner)));
 }
 
 void D3D11Renderer::Shutdown()
@@ -235,9 +264,26 @@ bool D3D11Renderer::CreateDeviceAndSwapChain([[maybe_unused]] HWND hWnd, uint32_
     }
 #endif
 
+    // Fallback to WARP if hardware adapter unavailable in current session
     if (FAILED(hr))
     {
-        std::cerr << "[D3D11Renderer] D3D11CreateDevice failed with hr=0x" << std::hex << hr << std::dec << std::endl;
+        hr = D3D11CreateDevice(
+            nullptr,
+            D3D_DRIVER_TYPE_WARP,
+            nullptr,
+            creationFlags & ~D3D11_CREATE_DEVICE_DEBUG,
+            featureLevels,
+            static_cast<UINT>(std::size(featureLevels)),
+            D3D11_SDK_VERSION,
+            &m_device,
+            &featureLevel,
+            &m_context
+        );
+    }
+
+    if (FAILED(hr))
+    {
+        LogMsg("[D3D11Renderer] D3D11CreateDevice failed with hr=" + std::to_string(static_cast<unsigned long>(hr)));
         return false;
     }
 
@@ -545,7 +591,7 @@ void D3D11Renderer::SetTargetPalette(const float hot[4], const float deep[4], co
         colorsChanged = true;
     }
 
-    if (generation != m_activePaletteGeneration && generation > 0)
+    if (colorsChanged || (generation != m_activePaletteGeneration && generation > 0))
     {
         m_activePaletteGeneration = generation;
         for (int i = 0; i < 4; ++i)
@@ -557,19 +603,10 @@ void D3D11Renderer::SetTargetPalette(const float hot[4], const float deep[4], co
         }
         m_targetBalance = balance;
         m_isPaletteTransitioning = true;
-        LogMsg("[D3D11Renderer][Gen " + std::to_string(generation) + "] 4-color palette transition started.");
-    }
-    else if (colorsChanged && generation == 0)
-    {
-        for (int i = 0; i < 4; ++i)
+        if (generation > 0)
         {
-            m_targetHot[i] = hot[i];
-            m_targetDeep[i] = deep[i];
-            m_targetColor2[i] = color2[i];
-            m_targetColor3[i] = color3[i];
+            LogMsg("[D3D11Renderer][Gen " + std::to_string(generation) + "] 4-color palette transition started.");
         }
-        m_targetBalance = balance;
-        m_isPaletteTransitioning = true;
     }
 }
 
@@ -588,12 +625,16 @@ void D3D11Renderer::Render(float time, float phase, float bloom, float audioLeve
     }
 
     // Smooth exponential LERP towards target palette (reconstructed from Lumn 1.1 RimColorModel)
+    // Use high-resolution wall-clock time so palette transitions remain smooth and responsive even when playback is paused
+    auto nowWall = std::chrono::steady_clock::now();
     float dt = 0.016f;
-    if (m_lastRenderTime > 0.0f)
+    if (m_hasLastWallTime)
     {
-        dt = std::clamp(time - m_lastRenderTime, 0.001f, 0.10f);
+        std::chrono::duration<float> elapsed = nowWall - m_lastWallTime;
+        dt = std::clamp(elapsed.count(), 0.001f, 0.10f);
     }
-    m_lastRenderTime = time;
+    m_lastWallTime = nowWall;
+    m_hasLastWallTime = true;
 
     // Rate: ~9% per 60 Hz frame tick (decay constant ~5.8)
     const float lerpFactor = 1.0f - std::exp(-dt * 5.8f);
@@ -636,11 +677,51 @@ void D3D11Renderer::Render(float time, float phase, float bloom, float audioLeve
         m_constants.balance += (m_targetBalance - m_constants.balance) * lerpFactor;
     }
 
+    // Advance organic activation reveal animation
+    if (m_isRevealing)
+    {
+        if (m_hasRevealStartTime)
+        {
+            auto now = std::chrono::steady_clock::now();
+            std::chrono::duration<float> elapsed = now - m_revealStartTime;
+            float t = elapsed.count() / REVEAL_DURATION_SECONDS;
+            if (t >= 1.0f)
+            {
+                m_revealProgress = 1.0f;
+                m_isRevealing = false;
+            }
+            else
+            {
+                // Smooth quintic smootherstep easing for soft, organic propagation
+                float tClamped = std::clamp(t, 0.0f, 1.0f);
+                m_revealProgress = tClamped * tClamped * tClamped * (tClamped * (tClamped * 6.0f - 15.0f) + 10.0f);
+            }
+        }
+    }
+    else
+    {
+        m_revealProgress = 1.0f;
+    }
+
+    if (!m_hasPhaseAnchor)
+    {
+        m_phaseAnchor = phase;
+        m_hasPhaseAnchor = true;
+    }
+
+    float relativePhase = phase - m_phaseAnchor;
+    if (relativePhase < 0.0f)
+    {
+        relativePhase += 1.0f;
+    }
+
     m_constants.time = time;
-    m_constants.phase = phase;
+    m_constants.phase = relativePhase;
     m_constants.bloom = bloom;
     m_constants.audioLevel = audioLevel;
     m_constants.beatPulse = beatPulse;
+    m_constants.revealProgress = m_revealProgress;
+    m_constants.revealCorner = m_revealCorner;
 
     // Update dynamic constant buffer
     D3D11_MAPPED_SUBRESOURCE mapped;

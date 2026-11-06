@@ -110,6 +110,27 @@ bool Window::Initialize(HINSTANCE hInstance, ResizeCallback onResize)
     return true;
 }
 
+void Window::Show()
+{
+    if (m_hwnd)
+    {
+        ShowWindow(m_hwnd, SW_SHOWNOACTIVATE);
+    }
+}
+
+void Window::Hide()
+{
+    if (m_hwnd)
+    {
+        ShowWindow(m_hwnd, SW_HIDE);
+    }
+}
+
+bool Window::IsVisible() const noexcept
+{
+    return m_hwnd && IsWindowVisible(m_hwnd);
+}
+
 void Window::Shutdown()
 {
     if (m_hwnd)

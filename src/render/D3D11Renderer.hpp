@@ -14,6 +14,7 @@
 #include <wrl/client.h>
 #include <cstdint>
 #include <string>
+#include <chrono>
 
 namespace lumn::render
 {
@@ -37,7 +38,9 @@ struct alignas(16) RimConstants
     float glowMultiplier;     // Overall glow multiplier (default 1.0)
     float audioLevel;         // Continuous dynamic normalized audio energy [0.0, 1.0]
     float beatPulse;          // Instantaneous beat transient impulse [0.0, 1.0]
-    float padding[3];         // 16-byte alignment padding (total 128 bytes)
+    float revealProgress;     // Organic activation reveal progress [0.0, 1.0] (1.0 = normal plasma)
+    float revealCorner;       // Origin corner: 0=Top-Left, 1=Top-Right, 2=Bottom-Right, 3=Bottom-Left
+    float revealPadding;      // 16-byte alignment padding (total 128 bytes)
 };
 
 static_assert(sizeof(RimConstants) == 128, "RimConstants size must be exactly 128 bytes");
@@ -64,6 +67,12 @@ public:
     void SetThickness(float thickness) noexcept { m_constants.thicknessMul = thickness; }
     void SetGlowMultiplier(float glow) noexcept { m_constants.glowMultiplier = glow; }
     void SetBalance(float balance) noexcept { m_constants.balance = balance; }
+
+    // Organic Plasma Activation Animation
+    void TriggerActivationAnimation(int forcedCorner = -1);
+    bool IsActivationAnimationActive() const noexcept { return m_isRevealing; }
+    float GetRevealProgress() const noexcept { return m_revealProgress; }
+    int GetRevealCorner() const noexcept { return static_cast<int>(m_revealCorner + 0.5f); }
 
 private:
     bool CreateDeviceAndSwapChain(HWND hWnd, uint32_t width, uint32_t height);
@@ -101,9 +110,20 @@ private:
     float m_targetColor2[4] = { 0.60f, 0.15f, 1.00f, 1.00f };
     float m_targetColor3[4] = { 0.95f, 0.25f, 0.65f, 1.00f };
     float m_targetBalance   = 0.50f;
-    float m_lastRenderTime = 0.0f;
+    std::chrono::steady_clock::time_point m_lastWallTime{};
+    bool m_hasLastWallTime = false;
     uint64_t m_activePaletteGeneration = 0;
     bool m_isPaletteTransitioning = false;
+
+    // Activation animation parameters
+    static constexpr float REVEAL_DURATION_SECONDS = 1.85f;
+    float m_revealProgress = 1.0f;
+    float m_revealCorner   = -1.0f;
+    bool  m_isRevealing    = false;
+    std::chrono::steady_clock::time_point m_revealStartTime{};
+    bool  m_hasRevealStartTime = false;
+    float m_phaseAnchor    = 0.0f;
+    bool  m_hasPhaseAnchor = false;
 };
 
 } // namespace lumn::render

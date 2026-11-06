@@ -122,16 +122,30 @@ bool LightingStudioWindow::Initialize(HINSTANCE hInstance, settings::LightingCon
 
     RegisterClassExW(&wc);
 
-    UINT dpi = GetWindowDpi(nullptr);
+    DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
+    DWORD exStyle = WS_EX_APPWINDOW;
+
+    // Create window initially
+    m_hWnd = CreateWindowExW(
+        exStyle,
+        LIGHTING_STUDIO_CLASS,
+        L"Lighting Studio",
+        style,
+        CW_USEDEFAULT, CW_USEDEFAULT,
+        static_cast<int>(DESIGN_WIDTH), static_cast<int>(DESIGN_HEIGHT),
+        nullptr, nullptr, m_hInstance, this
+    );
+
+    if (!m_hWnd) return false;
+
+    // Determine actual DPI for the newly created window on its active monitor
+    UINT dpi = GetWindowDpi(m_hWnd);
     float scale = static_cast<float>(dpi) / 96.0f;
 
     int clientW = static_cast<int>(DESIGN_WIDTH * scale + 0.5f);
     int clientH = static_cast<int>(DESIGN_HEIGHT * scale + 0.5f);
 
     RECT wr = { 0, 0, clientW, clientH };
-    DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
-    DWORD exStyle = WS_EX_APPWINDOW;
-
     AdjustWindowRectDpi(&wr, style, FALSE, exStyle, dpi);
 
     int winW = wr.right - wr.left;
@@ -139,16 +153,7 @@ bool LightingStudioWindow::Initialize(HINSTANCE hInstance, settings::LightingCon
     int posX = (GetSystemMetrics(SM_CXSCREEN) - winW) / 2;
     int posY = (GetSystemMetrics(SM_CYSCREEN) - winH) / 2;
 
-    m_hWnd = CreateWindowExW(
-        exStyle,
-        LIGHTING_STUDIO_CLASS,
-        L"Lighting Studio",
-        style,
-        posX, posY, winW, winH,
-        nullptr, nullptr, m_hInstance, this
-    );
-
-    if (!m_hWnd) return false;
+    SetWindowPos(m_hWnd, nullptr, posX, posY, winW, winH, SWP_NOZORDER | SWP_NOACTIVATE);
 
     // Enable Windows 11 immersive dark mode and rounded window corners
     BOOL useDarkMode = TRUE;
@@ -258,6 +263,11 @@ bool LightingStudioWindow::CreateDeviceResources()
         DWRITE_FONT_STRETCH_NORMAL, 10.5f, L"en-us", &m_tfSmall
     );
     m_dwriteFactory->CreateTextFormat(
+        L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL,
+        DWRITE_FONT_STRETCH_NORMAL, 10.5f, L"en-us", &m_tfSmallCenter
+    );
+    if (m_tfSmallCenter) m_tfSmallCenter->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+    m_dwriteFactory->CreateTextFormat(
         L"Consolas", nullptr, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL,
         DWRITE_FONT_STRETCH_NORMAL, 10.5f, L"en-us", &m_tfMono
     );
@@ -283,6 +293,7 @@ void LightingStudioWindow::DiscardDeviceResources()
     m_brushSolid.Reset();
     m_tfMono.Reset();
     m_tfSmall.Reset();
+    m_tfSmallCenter.Reset();
     m_tfLabelCenter.Reset();
     m_tfLabel.Reset();
     m_tfSubheader.Reset();
@@ -351,8 +362,20 @@ void LightingStudioWindow::Render()
     m_renderTarget->Clear(D2D1::ColorF(0.090f, 0.090f, 0.105f, 1.0f)); // #17171B
 
     // Active color retrieval
-    float* activeCol = (m_activeSlot == 0) ? m_config->color1 :
-                       (m_activeSlot == 1 ? m_config->color2 : m_config->color3);
+    float* activeCol = nullptr;
+    if (m_config->colorSource == settings::ColorSourceMode::Solid)
+    {
+        activeCol = m_config->solidColor;
+    }
+    else if (m_config->colorSource == settings::ColorSourceMode::Mixed)
+    {
+        activeCol = (m_activeSlot == 0) ? m_config->color1 :
+                    (m_activeSlot == 1 ? m_config->color2 : m_config->color3);
+    }
+    else
+    {
+        activeCol = m_artworkPalette.hot;
+    }
     auto activeHsb = media::ColorExtractor::RGBtoHSB(activeCol[0], activeCol[1], activeCol[2]);
 
     GenerateWheelBitmap(activeHsb.b);
@@ -364,58 +387,118 @@ void LightingStudioWindow::Render()
     m_brushSolid->SetColor(D2D1::ColorF(0.55f, 0.55f, 0.60f, 1.0f));
     m_renderTarget->DrawText(L"Customize your plasma lighting", 30, m_tfSubheader.Get(), D2D1::RectF(24.0f, 38.0f, 416.0f, 56.0f), m_brushSolid.Get());
 
-    // 2. Color Source Segmented Toggle
+    // 2. Color Source 3-Mode Segmented Toggle (Artwork, Mixed, Solid)
     D2D1_ROUNDED_RECT segTrack = D2D1::RoundedRect(D2D1::RectF(24.0f, 62.0f, 416.0f, 96.0f), 7.0f, 7.0f);
     m_brushSolid->SetColor(D2D1::ColorF(0.13f, 0.13f, 0.15f, 1.0f));
     m_renderTarget->FillRoundedRectangle(&segTrack, m_brushSolid.Get());
     m_brushSolid->SetColor(D2D1::ColorF(0.18f, 0.18f, 0.22f, 1.0f));
     m_renderTarget->DrawRoundedRectangle(&segTrack, m_brushSolid.Get(), 1.0f);
 
-    bool isCustom = (m_config->colorSource == settings::ColorSourceMode::Custom);
-    D2D1_ROUNDED_RECT activePill = isCustom
-        ? D2D1::RoundedRect(D2D1::RectF(222.0f, 64.0f, 414.0f, 94.0f), 6.0f, 6.0f)
-        : D2D1::RoundedRect(D2D1::RectF(26.0f, 64.0f, 218.0f, 94.0f), 6.0f, 6.0f);
+    bool isArt = (m_config->colorSource == settings::ColorSourceMode::Artwork);
+    bool isMix = (m_config->colorSource == settings::ColorSourceMode::Mixed);
+    bool isSol = (m_config->colorSource == settings::ColorSourceMode::Solid);
+
+    D2D1_ROUNDED_RECT activePill = isArt
+        ? D2D1::RoundedRect(D2D1::RectF(26.0f, 64.0f, 154.0f, 94.0f), 6.0f, 6.0f)
+        : (isMix ? D2D1::RoundedRect(D2D1::RectF(156.0f, 64.0f, 284.0f, 94.0f), 6.0f, 6.0f)
+                 : D2D1::RoundedRect(D2D1::RectF(286.0f, 64.0f, 414.0f, 94.0f), 6.0f, 6.0f));
 
     m_brushSolid->SetColor(D2D1::ColorF(0.24f, 0.25f, 0.30f, 1.0f));
     m_renderTarget->FillRoundedRectangle(&activePill, m_brushSolid.Get());
 
     // Segment labels
-    m_brushSolid->SetColor(isCustom ? D2D1::ColorF(0.55f, 0.55f, 0.60f) : D2D1::ColorF(1.0f, 1.0f, 1.0f));
-    m_renderTarget->DrawText(L"Artwork Colors", 14, m_tfLabelCenter.Get(), D2D1::RectF(26.0f, 70.0f, 218.0f, 88.0f), m_brushSolid.Get());
+    m_brushSolid->SetColor(isArt ? D2D1::ColorF(1.0f, 1.0f, 1.0f) : D2D1::ColorF(0.55f, 0.55f, 0.60f));
+    m_renderTarget->DrawText(L"Artwork", 7, m_tfLabelCenter.Get(), D2D1::RectF(26.0f, 70.0f, 154.0f, 88.0f), m_brushSolid.Get());
 
-    m_brushSolid->SetColor(isCustom ? D2D1::ColorF(1.0f, 1.0f, 1.0f) : D2D1::ColorF(0.55f, 0.55f, 0.60f));
-    m_renderTarget->DrawText(L"Custom Colors", 13, m_tfLabelCenter.Get(), D2D1::RectF(222.0f, 70.0f, 414.0f, 88.0f), m_brushSolid.Get());
+    m_brushSolid->SetColor(isMix ? D2D1::ColorF(1.0f, 1.0f, 1.0f) : D2D1::ColorF(0.55f, 0.55f, 0.60f));
+    m_renderTarget->DrawText(L"Mixed", 5, m_tfLabelCenter.Get(), D2D1::RectF(156.0f, 70.0f, 284.0f, 88.0f), m_brushSolid.Get());
 
-    // 3. Custom Color Slots (Row of 3 cards)
-    const wchar_t* slotTitles[3] = { L"Color 1", L"Color 2", L"Color 3" };
-    const float* slotColors[3] = { m_config->color1, m_config->color2, m_config->color3 };
+    m_brushSolid->SetColor(isSol ? D2D1::ColorF(1.0f, 1.0f, 1.0f) : D2D1::ColorF(0.55f, 0.55f, 0.60f));
+    m_renderTarget->DrawText(L"Solid", 5, m_tfLabelCenter.Get(), D2D1::RectF(286.0f, 70.0f, 414.0f, 88.0f), m_brushSolid.Get());
 
-    for (int i = 0; i < 3; ++i)
+    // 3. Palette Slots depending on Mode
+    if (isArt)
     {
-        float left = 24.0f + i * 134.0f;
-        D2D1_ROUNDED_RECT slotBox = D2D1::RoundedRect(D2D1::RectF(left, 104.0f, left + 124.0f, 150.0f), 8.0f, 8.0f);
+        // Artwork mode: hide editable slots and show dynamic artwork status card
+        D2D1_ROUNDED_RECT infoBox = D2D1::RoundedRect(D2D1::RectF(24.0f, 104.0f, 416.0f, 150.0f), 8.0f, 8.0f);
+        m_brushSolid->SetColor(D2D1::ColorF(0.12f, 0.12f, 0.14f, 1.0f));
+        m_renderTarget->FillRoundedRectangle(&infoBox, m_brushSolid.Get());
+        m_brushSolid->SetColor(D2D1::ColorF(0.18f, 0.18f, 0.22f, 1.0f));
+        m_renderTarget->DrawRoundedRectangle(&infoBox, m_brushSolid.Get(), 1.0f);
 
-        bool isSlotSelected = (i == m_activeSlot);
-        m_brushSolid->SetColor(isSlotSelected ? D2D1::ColorF(0.18f, 0.19f, 0.23f) : D2D1::ColorF(0.12f, 0.12f, 0.14f));
+        // Mini preview swatches of artwork palette
+        const float* artColors[4] = { m_artworkPalette.hot, m_artworkPalette.color2, m_artworkPalette.color3, m_artworkPalette.deep };
+        for (int i = 0; i < 4; ++i)
+        {
+            float dotX = 42.0f + i * 18.0f;
+            D2D1_ROUNDED_RECT dot = D2D1::RoundedRect(D2D1::RectF(dotX, 120.0f, dotX + 13.0f, 134.0f), 3.0f, 3.0f);
+            m_brushSolid->SetColor(FloatToD2DColor(artColors[i]));
+            m_renderTarget->FillRoundedRectangle(&dot, m_brushSolid.Get());
+        }
+
+        m_brushSolid->SetColor(D2D1::ColorF(0.92f, 0.92f, 0.96f));
+        m_renderTarget->DrawText(L"Dynamic Artwork Extraction Active", 33, m_tfLabel.Get(), D2D1::RectF(124.0f, 110.0f, 410.0f, 126.0f), m_brushSolid.Get());
+
+        m_brushSolid->SetColor(D2D1::ColorF(0.55f, 0.55f, 0.60f));
+        m_renderTarget->DrawText(L"Synchronized with active media playback", 38, m_tfSmall.Get(), D2D1::RectF(124.0f, 126.0f, 410.0f, 142.0f), m_brushSolid.Get());
+    }
+    else if (isSol)
+    {
+        // Solid mode: Exactly 1 centered custom color slot
+        D2D1_ROUNDED_RECT slotBox = D2D1::RoundedRect(D2D1::RectF(140.0f, 104.0f, 300.0f, 150.0f), 8.0f, 8.0f);
+        m_brushSolid->SetColor(D2D1::ColorF(0.18f, 0.19f, 0.23f));
         m_renderTarget->FillRoundedRectangle(&slotBox, m_brushSolid.Get());
-
-        m_brushSolid->SetColor(isSlotSelected ? D2D1::ColorF(0.0f, 0.55f, 1.0f, 1.0f) : D2D1::ColorF(0.18f, 0.18f, 0.22f));
-        m_renderTarget->DrawRoundedRectangle(&slotBox, m_brushSolid.Get(), isSlotSelected ? 1.5f : 1.0f);
+        m_brushSolid->SetColor(D2D1::ColorF(0.0f, 0.55f, 1.0f, 1.0f));
+        m_renderTarget->DrawRoundedRectangle(&slotBox, m_brushSolid.Get(), 1.5f);
 
         // Color Swatch Pill
-        D2D1_ROUNDED_RECT swatch = D2D1::RoundedRect(D2D1::RectF(left + 8.0f, 114.0f, left + 32.0f, 138.0f), 5.0f, 5.0f);
-        m_brushSolid->SetColor(FloatToD2DColor(slotColors[i]));
+        D2D1_ROUNDED_RECT swatch = D2D1::RoundedRect(D2D1::RectF(150.0f, 114.0f, 178.0f, 140.0f), 5.0f, 5.0f);
+        m_brushSolid->SetColor(FloatToD2DColor(m_config->solidColor));
         m_renderTarget->FillRoundedRectangle(&swatch, m_brushSolid.Get());
         m_brushSolid->SetColor(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.40f));
         m_renderTarget->DrawRoundedRectangle(&swatch, m_brushSolid.Get(), 1.0f);
 
         // Slot title & Hex
         m_brushSolid->SetColor(D2D1::ColorF(0.95f, 0.95f, 1.0f));
-        m_renderTarget->DrawText(slotTitles[i], static_cast<UINT32>(wcslen(slotTitles[i])), m_tfLabel.Get(), D2D1::RectF(left + 38.0f, 110.0f, left + 122.0f, 126.0f), m_brushSolid.Get());
+        m_renderTarget->DrawText(L"Solid Color", 11, m_tfLabel.Get(), D2D1::RectF(186.0f, 110.0f, 296.0f, 126.0f), m_brushSolid.Get());
 
-        std::wstring hexStr = FloatToHex(slotColors[i]);
+        std::wstring hexStr = FloatToHex(m_config->solidColor);
         m_brushSolid->SetColor(D2D1::ColorF(0.60f, 0.60f, 0.65f));
-        m_renderTarget->DrawText(hexStr.c_str(), static_cast<UINT32>(hexStr.length()), m_tfSmall.Get(), D2D1::RectF(left + 38.0f, 126.0f, left + 122.0f, 142.0f), m_brushSolid.Get());
+        m_renderTarget->DrawText(hexStr.c_str(), static_cast<UINT32>(hexStr.length()), m_tfSmall.Get(), D2D1::RectF(186.0f, 126.0f, 296.0f, 142.0f), m_brushSolid.Get());
+    }
+    else
+    {
+        // Mixed mode: Row of 3 custom color slots
+        const wchar_t* slotTitles[3] = { L"Color 1", L"Color 2", L"Color 3" };
+        const float* slotColors[3] = { m_config->color1, m_config->color2, m_config->color3 };
+
+        for (int i = 0; i < 3; ++i)
+        {
+            float left = 24.0f + i * 134.0f;
+            D2D1_ROUNDED_RECT slotBox = D2D1::RoundedRect(D2D1::RectF(left, 104.0f, left + 124.0f, 150.0f), 8.0f, 8.0f);
+
+            bool isSlotSelected = (i == m_activeSlot);
+            m_brushSolid->SetColor(isSlotSelected ? D2D1::ColorF(0.18f, 0.19f, 0.23f) : D2D1::ColorF(0.12f, 0.12f, 0.14f));
+            m_renderTarget->FillRoundedRectangle(&slotBox, m_brushSolid.Get());
+
+            m_brushSolid->SetColor(isSlotSelected ? D2D1::ColorF(0.0f, 0.55f, 1.0f, 1.0f) : D2D1::ColorF(0.18f, 0.18f, 0.22f));
+            m_renderTarget->DrawRoundedRectangle(&slotBox, m_brushSolid.Get(), isSlotSelected ? 1.5f : 1.0f);
+
+            // Color Swatch Pill
+            D2D1_ROUNDED_RECT swatch = D2D1::RoundedRect(D2D1::RectF(left + 8.0f, 114.0f, left + 32.0f, 138.0f), 5.0f, 5.0f);
+            m_brushSolid->SetColor(FloatToD2DColor(slotColors[i]));
+            m_renderTarget->FillRoundedRectangle(&swatch, m_brushSolid.Get());
+            m_brushSolid->SetColor(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.40f));
+            m_renderTarget->DrawRoundedRectangle(&swatch, m_brushSolid.Get(), 1.0f);
+
+            // Slot title & Hex
+            m_brushSolid->SetColor(D2D1::ColorF(0.95f, 0.95f, 1.0f));
+            m_renderTarget->DrawText(slotTitles[i], static_cast<UINT32>(wcslen(slotTitles[i])), m_tfLabel.Get(), D2D1::RectF(left + 38.0f, 110.0f, left + 122.0f, 126.0f), m_brushSolid.Get());
+
+            std::wstring hexStr = FloatToHex(slotColors[i]);
+            m_brushSolid->SetColor(D2D1::ColorF(0.60f, 0.60f, 0.65f));
+            m_renderTarget->DrawText(hexStr.c_str(), static_cast<UINT32>(hexStr.length()), m_tfSmall.Get(), D2D1::RectF(left + 38.0f, 126.0f, left + 122.0f, 142.0f), m_brushSolid.Get());
+        }
     }
 
     // 4. Circular Color Wheel
@@ -492,9 +575,22 @@ void LightingStudioWindow::Render()
     m_brushSolid->SetColor(D2D1::ColorF(0.20f, 0.20f, 0.24f, 1.0f));
     m_renderTarget->DrawRoundedRectangle(&hexPill, m_brushSolid.Get(), 1.0f);
 
-    std::wstring hexText = FloatToHex(activeCol);
-    m_brushSolid->SetColor(D2D1::ColorF(0.90f, 0.90f, 0.95f, 1.0f));
-    m_renderTarget->DrawText(hexText.c_str(), static_cast<UINT32>(hexText.length()), m_tfMono.Get(), D2D1::RectF(175.0f, 335.0f, 265.0f, 349.0f), m_brushSolid.Get());
+    if (isArt)
+    {
+        m_brushSolid->SetColor(D2D1::ColorF(0.60f, 0.60f, 0.65f, 1.0f));
+        m_renderTarget->DrawText(L"Artwork", 7, m_tfMono.Get(), D2D1::RectF(175.0f, 335.0f, 265.0f, 349.0f), m_brushSolid.Get());
+
+        // In Artwork mode: dim color wheel & brightness slider to indicate non-interactive state
+        D2D1_ROUNDED_RECT veil = D2D1::RoundedRect(D2D1::RectF(80.0f, 156.0f, 360.0f, 358.0f), 10.0f, 10.0f);
+        m_brushSolid->SetColor(D2D1::ColorF(0.090f, 0.090f, 0.105f, 0.60f));
+        m_renderTarget->FillRoundedRectangle(&veil, m_brushSolid.Get());
+    }
+    else
+    {
+        std::wstring hexText = FloatToHex(activeCol);
+        m_brushSolid->SetColor(D2D1::ColorF(0.90f, 0.90f, 0.95f, 1.0f));
+        m_renderTarget->DrawText(hexText.c_str(), static_cast<UINT32>(hexText.length()), m_tfMono.Get(), D2D1::RectF(175.0f, 335.0f, 265.0f, 349.0f), m_brushSolid.Get());
+    }
 
     // 7. Appearance Card (Thickness, Glow, Speed)
     D2D1_ROUNDED_RECT cardApp = D2D1::RoundedRect(D2D1::RectF(24.0f, 362.0f, 416.0f, 506.0f), 8.0f, 8.0f);
@@ -553,8 +649,17 @@ void LightingStudioWindow::Render()
     D2D1_ROUNDED_RECT prevCapsule = D2D1::RoundedRect(D2D1::RectF(24.0f, 534.0f, 416.0f, 560.0f), 12.0f, 12.0f);
 
     D2D1_GRADIENT_STOP prevStops[4];
-    if (m_config->colorSource == settings::ColorSourceMode::Custom)
+    if (isSol)
     {
+        // Solid mode: pure uniform solid color
+        prevStops[0] = { 0.00f, FloatToD2DColor(m_config->solidColor) };
+        prevStops[1] = { 0.33f, FloatToD2DColor(m_config->solidColor) };
+        prevStops[2] = { 0.66f, FloatToD2DColor(m_config->solidColor) };
+        prevStops[3] = { 1.00f, FloatToD2DColor(m_config->solidColor) };
+    }
+    else if (isMix)
+    {
+        // Mixed mode: Color 2 -> Color 1 -> Color 3
         prevStops[0] = { 0.00f, D2D1::ColorF(m_config->color2[0] * 0.35f, m_config->color2[1] * 0.35f, m_config->color2[2] * 0.35f, 1.0f) };
         prevStops[1] = { 0.33f, FloatToD2DColor(m_config->color2) };
         prevStops[2] = { 0.66f, FloatToD2DColor(m_config->color1) };
@@ -562,6 +667,7 @@ void LightingStudioWindow::Render()
     }
     else
     {
+        // Artwork mode: dynamic extracted artwork palette
         prevStops[0] = { 0.00f, FloatToD2DColor(m_artworkPalette.deep) };
         prevStops[1] = { 0.33f, FloatToD2DColor(m_artworkPalette.color2) };
         prevStops[2] = { 0.66f, FloatToD2DColor(m_artworkPalette.hot) };
@@ -615,6 +721,7 @@ void LightingStudioWindow::Render()
 void LightingStudioWindow::UpdateColorFromWheel(float mouseX, float mouseY)
 {
     if (!m_config) return;
+    if (m_config->colorSource == settings::ColorSourceMode::Artwork) return;
 
     float dx = mouseX - WHEEL_CENTER_X;
     float dy = mouseY - WHEEL_CENTER_Y;
@@ -625,8 +732,10 @@ void LightingStudioWindow::UpdateColorFromWheel(float mouseX, float mouseY)
     if (angle < 0.0f) angle += 2.0f * PI_F;
     float hue = angle / (2.0f * PI_F);
 
-    float* col = (m_activeSlot == 0) ? m_config->color1 :
-                 (m_activeSlot == 1 ? m_config->color2 : m_config->color3);
+    float* col = (m_config->colorSource == settings::ColorSourceMode::Solid)
+        ? m_config->solidColor
+        : ((m_activeSlot == 0) ? m_config->color1 : (m_activeSlot == 1 ? m_config->color2 : m_config->color3));
+
     auto hsb = media::ColorExtractor::RGBtoHSB(col[0], col[1], col[2]);
     float bri = (hsb.b < 0.05f) ? 1.0f : hsb.b;
 
@@ -636,7 +745,6 @@ void LightingStudioWindow::UpdateColorFromWheel(float mouseX, float mouseY)
     col[2] = rgb.b;
     col[3] = 1.0f;
 
-    m_config->colorSource = settings::ColorSourceMode::Custom;
     NotifyChanged();
     InvalidateRect(m_hWnd, nullptr, FALSE);
 }
@@ -644,11 +752,14 @@ void LightingStudioWindow::UpdateColorFromWheel(float mouseX, float mouseY)
 void LightingStudioWindow::UpdateBrightnessFromSlider(float mouseX)
 {
     if (!m_config) return;
+    if (m_config->colorSource == settings::ColorSourceMode::Artwork) return;
 
     float bri = std::clamp((mouseX - 100.0f) / 240.0f, 0.05f, 1.0f);
 
-    float* col = (m_activeSlot == 0) ? m_config->color1 :
-                 (m_activeSlot == 1 ? m_config->color2 : m_config->color3);
+    float* col = (m_config->colorSource == settings::ColorSourceMode::Solid)
+        ? m_config->solidColor
+        : ((m_activeSlot == 0) ? m_config->color1 : (m_activeSlot == 1 ? m_config->color2 : m_config->color3));
+
     auto hsb = media::ColorExtractor::RGBtoHSB(col[0], col[1], col[2]);
 
     auto rgb = media::ColorExtractor::HSBtoRGB(hsb.h, hsb.s, bri);
@@ -656,7 +767,6 @@ void LightingStudioWindow::UpdateBrightnessFromSlider(float mouseX)
     col[1] = rgb.g;
     col[2] = rgb.b;
 
-    m_config->colorSource = settings::ColorSourceMode::Custom;
     NotifyChanged();
     InvalidateRect(m_hWnd, nullptr, FALSE);
 }
@@ -787,13 +897,49 @@ LRESULT LightingStudioWindow::HandleMessage(HWND hWnd, UINT uMsg, WPARAM wParam,
         float cx = static_cast<float>(pt.x) * 96.0f / dpiX;
         float cy = static_cast<float>(pt.y) * 96.0f / dpiY;
 
-        // Hover hand cursor over interactive regions
-        if ((cy >= 62.0f && cy <= 96.0f && cx >= 24.0f && cx <= 416.0f) ||
-            (cy >= 104.0f && cy <= 150.0f && cx >= 24.0f && cx <= 416.0f) ||
-            (std::hypot(cx - WHEEL_CENTER_X, cy - WHEEL_CENTER_Y) <= WHEEL_RADIUS + 6.0f) ||
-            (cy >= 305.0f && cy <= 325.0f && cx >= 95.0f && cx <= 345.0f) ||
-            (cy >= 368.0f && cy <= 498.0f && cx >= 32.0f && cx <= 408.0f) ||
-            (cy >= 570.0f && cy <= 612.0f && ((cx >= 24.0f && cx <= 160.0f) || (cx >= 326.0f && cx <= 416.0f))))
+        bool isHand = false;
+
+        // 3-mode toggle
+        if (cy >= 62.0f && cy <= 96.0f && cx >= 24.0f && cx <= 416.0f)
+        {
+            isHand = true;
+        }
+        // Slots
+        else if (cy >= 104.0f && cy <= 150.0f)
+        {
+            if (m_config && m_config->colorSource == settings::ColorSourceMode::Mixed && cx >= 24.0f && cx <= 416.0f)
+            {
+                isHand = true;
+            }
+            else if (m_config && m_config->colorSource == settings::ColorSourceMode::Solid && cx >= 140.0f && cx <= 300.0f)
+            {
+                isHand = true;
+            }
+        }
+        // Wheel & Brightness Slider (interactive only in Mixed and Solid modes)
+        else if (m_config && m_config->colorSource != settings::ColorSourceMode::Artwork)
+        {
+            if (std::hypot(cx - WHEEL_CENTER_X, cy - WHEEL_CENTER_Y) <= WHEEL_RADIUS + 6.0f)
+            {
+                isHand = true;
+            }
+            else if (cy >= 305.0f && cy <= 325.0f && cx >= 95.0f && cx <= 345.0f)
+            {
+                isHand = true;
+            }
+        }
+
+        // Appearance sliders & action buttons
+        if (!isHand)
+        {
+            if ((cy >= 368.0f && cy <= 498.0f && cx >= 32.0f && cx <= 408.0f) ||
+                (cy >= 570.0f && cy <= 612.0f && ((cx >= 24.0f && cx <= 160.0f) || (cx >= 326.0f && cx <= 416.0f))))
+            {
+                isHand = true;
+            }
+        }
+
+        if (isHand)
         {
             SetCursor(LoadCursor(nullptr, IDC_HAND));
             return TRUE;
@@ -809,41 +955,61 @@ LRESULT LightingStudioWindow::HandleMessage(HWND hWnd, UINT uMsg, WPARAM wParam,
 
         SetCapture(hWnd);
 
-        // 1. Color Source Mode Toggle
+        // 1. Color Source Mode Toggle (Artwork, Mixed, Solid)
         if (y >= 62.0f && y <= 96.0f && x >= 24.0f && x <= 416.0f)
         {
             if (m_config)
             {
-                m_config->colorSource = (x < 220.0f) ? settings::ColorSourceMode::Artwork : settings::ColorSourceMode::Custom;
+                if (x < 155.0f)
+                {
+                    m_config->colorSource = settings::ColorSourceMode::Artwork;
+                }
+                else if (x < 285.0f)
+                {
+                    m_config->colorSource = settings::ColorSourceMode::Mixed;
+                }
+                else
+                {
+                    m_config->colorSource = settings::ColorSourceMode::Solid;
+                }
                 NotifyChanged();
                 InvalidateRect(hWnd, nullptr, FALSE);
             }
             return 0;
         }
 
-        // 2. Custom Color Slots (Row of 3)
-        if (y >= 104.0f && y <= 150.0f)
+        // 2. Custom Color Slots
+        if (y >= 104.0f && y <= 150.0f && m_config)
         {
-            if (x >= 24.0f && x <= 148.0f)       { SelectColorSlot(0); return 0; }
-            else if (x >= 158.0f && x <= 282.0f) { SelectColorSlot(1); return 0; }
-            else if (x >= 292.0f && x <= 416.0f) { SelectColorSlot(2); return 0; }
+            if (m_config->colorSource == settings::ColorSourceMode::Mixed)
+            {
+                if (x >= 24.0f && x <= 148.0f)       { SelectColorSlot(0); return 0; }
+                else if (x >= 158.0f && x <= 282.0f) { SelectColorSlot(1); return 0; }
+                else if (x >= 292.0f && x <= 416.0f) { SelectColorSlot(2); return 0; }
+            }
+            else if (m_config->colorSource == settings::ColorSourceMode::Solid)
+            {
+                if (x >= 140.0f && x <= 300.0f)      { SelectColorSlot(0); return 0; }
+            }
         }
 
-        // 3. Color Wheel
-        float distToWheel = std::hypot(x - WHEEL_CENTER_X, y - WHEEL_CENTER_Y);
-        if (distToWheel <= WHEEL_RADIUS + 8.0f)
+        // 3. Color Wheel & Brightness Slider (Active only in Mixed & Solid modes)
+        if (m_config && m_config->colorSource != settings::ColorSourceMode::Artwork)
         {
-            m_dragState = DragState::ColorWheel;
-            UpdateColorFromWheel(x, y);
-            return 0;
-        }
+            float distToWheel = std::hypot(x - WHEEL_CENTER_X, y - WHEEL_CENTER_Y);
+            if (distToWheel <= WHEEL_RADIUS + 8.0f)
+            {
+                m_dragState = DragState::ColorWheel;
+                UpdateColorFromWheel(x, y);
+                return 0;
+            }
 
-        // 4. Brightness Slider
-        if (y >= 305.0f && y <= 325.0f && x >= 95.0f && x <= 345.0f)
-        {
-            m_dragState = DragState::BrightnessSlider;
-            UpdateBrightnessFromSlider(x);
-            return 0;
+            if (y >= 305.0f && y <= 325.0f && x >= 95.0f && x <= 345.0f)
+            {
+                m_dragState = DragState::BrightnessSlider;
+                UpdateBrightnessFromSlider(x);
+                return 0;
+            }
         }
 
         // 5. Appearance Sliders (Thickness, Glow, Speed)

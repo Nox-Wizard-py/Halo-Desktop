@@ -33,7 +33,7 @@ public:
 
     // Per-frame evaluation on render thread; returns current render state
     // When isPlaying is false, phase and position freeze completely (zero drift, zero jump on resume)
-    AudioRenderState Tick(double now, bool isPlaying = true);
+    AudioRenderState Tick(double now, bool isPlaying = true, double speedMultiplier = 1.0);
 
     // Direct queries
     double GetBPM() const;

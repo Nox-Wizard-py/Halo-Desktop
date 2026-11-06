@@ -19,7 +19,9 @@ cbuffer RimConstants : register(b0)
     float  GlowMultiplier;  // Overall glow intensity multiplier (default 1.0)
     float  AudioLevel;      // Continuous dynamic normalized audio energy [0.0, 1.0]
     float  BeatPulse;       // Instantaneous beat transient impulse [0.0, 1.0]
-    float3 Padding;         // Alignment padding (total 128 bytes)
+    float  RevealProgress;  // Organic activation reveal progress [0.0, 1.0] (1.0 = normal plasma)
+    float  RevealCorner;    // Origin corner: 0=Top-Left, 1=Top-Right, 2=Bottom-Right, 3=Bottom-Left
+    float  RevealPadding;   // Alignment padding (total 128 bytes)
 };
 
 struct VS_OUTPUT
@@ -59,34 +61,101 @@ float4 PSMain(VS_OUTPUT input) : SV_Target
         edgeDist = min(edgeDist, max(dNotch, 0.0f));
     }
 
-    // 2. Normalized Continuous Perimeter Coordinates & Revolving Wave Head
-    // Angle normalized to [0.0, 1.0) clockwise
-    float angle = atan2(p.y, p.x);
-    float normAngle = angle * (1.0f / (2.0f * 3.141592653589793f)) + 0.5f;
+    // 2. Continuous Rectangle Perimeter Coordinate (uPerim in [0.0, 1.0) clockwise from Top-Left)
+    float perim = max(2.0f * (ScreenSize.x + ScreenSize.y), 1.0f);
+    float perimDist = 0.0f;
+    float2 dEdge = float2(pixelPos.x, ScreenSize.x - pixelPos.x); // dist to Left, Right
+    float2 dVert = float2(pixelPos.y, ScreenSize.y - pixelPos.y); // dist to Top, Bottom
 
-    // Cyclic angular distance from current pixel to the revolving wave crest
-    float waveHead = frac(Phase);
-    float cyclicDiff = normAngle - waveHead;
+    // Perimeter distance clockwise from Top-Left corner:
+    if (dVert.x <= dEdge.x && dVert.x <= dEdge.y && dVert.x <= dVert.y)
+    {
+        perimDist = pixelPos.x; // Top edge: x in [0, W]
+    }
+    else if (dEdge.y <= dEdge.x && dEdge.y <= dVert.x && dEdge.y <= dVert.y)
+    {
+        perimDist = ScreenSize.x + pixelPos.y; // Right edge: y in [0, H]
+    }
+    else if (dVert.y <= dEdge.x && dVert.y <= dEdge.y && dVert.y <= dVert.x)
+    {
+        perimDist = ScreenSize.x + ScreenSize.y + (ScreenSize.x - pixelPos.x); // Bottom edge: x in [W, 0]
+    }
+    else
+    {
+        perimDist = 2.0f * ScreenSize.x + ScreenSize.y + (ScreenSize.y - pixelPos.y); // Left edge: y in [H, 0]
+    }
+
+    float uPerim = perimDist / perim;
+
+    // 3. Screen-Space Corner Anchoring
+    float uCorner = 0.0f;
+    if (RevealCorner < 0.5f)
+    {
+        uCorner = 0.0f; // Corner 0: Top-Left (0, 0)
+    }
+    else if (RevealCorner < 1.5f)
+    {
+        uCorner = ScreenSize.x / perim; // Corner 1: Top-Right (W, 0)
+    }
+    else if (RevealCorner < 2.5f)
+    {
+        uCorner = 0.5f; // Corner 2: Bottom-Right (W, H)
+    }
+    else
+    {
+        uCorner = (2.0f * ScreenSize.x + ScreenSize.y) / perim; // Corner 3: Bottom-Left (0, H)
+    }
+
+    // 4. Plasma Segment Spatial Placement & Anchor
+    // The plasma wave crest is anchored to the selected corner, advancing smoothly with Phase
+    float waveCenter = frac(uCorner + Phase);
+    float cyclicDiff = uPerim - waveCenter;
     cyclicDiff = cyclicDiff - round(cyclicDiff); // Wrapped to [-0.5, +0.5]
     float segDist = abs(cyclicDiff);
 
-    // 3. Partial-Perimeter Segment Envelope (~50% active perimeter coverage)
-    // Active half-span = 0.26 (covers ~52% of total monitor perimeter)
+    // 5. Partial-Perimeter Segment Envelope (~50% active perimeter coverage)
+    // Active half-span = 0.26 (covers ~52% of total monitor perimeter, centered at the corner)
     const float activeHalfSpan = 0.26f;
     float segmentEnv = smoothstep(activeHalfSpan, 0.04f, segDist);
     const float ambientFloor = 0.03f; // subtle baseline aura so inactive side is not completely dead
     float waveEnv = ambientFloor + (1.0f - ambientFloor) * segmentEnv;
 
-    // 4. Multi-Harmonic Wave Along Perimeter (Recovered LUMN 3-harmonic equation)
-    float t = Phase + normAngle;
+    // 6. Multi-Harmonic Wave Along Perimeter (Recovered LUMN 3-harmonic equation)
+    float t = Phase + uPerim;
     float wave = 0.50f * sin(t * 18.849556f - Time * 1.4f)
                + 0.35f * sin(t * 37.699112f + Time * 0.9f)
                + 0.25f * sin(t * 56.548668f + Time * 2.1f);
 
-    // 5. Dynamic Rim Reach / Thickness Calculation (Expanded atmospheric edge reach)
+    // 7. Organic Plasma Activation Reveal Mask
+    // Distance from pixel to origin corner along both adjoining edges
+    float dU_corner = abs(frac(uPerim - uCorner + 0.5f) - 0.5f);
+    float revealMask = 1.0f;
+    float meniscusGlow = 0.0f;
+
+    if (RevealProgress < 1.0f)
+    {
+        const float feather = 0.04f;
+        float fluidRipple = (0.015f * sin(uPerim * 37.699112f - Time * 2.5f)
+                           + 0.008f * cos(uPerim * 62.831853f + Time * 3.8f))
+                          * saturate(1.0f - (dU_corner / activeHalfSpan));
+        float frontEdge = 0.02f + RevealProgress * (activeHalfSpan + feather - 0.02f);
+        float dFront = (frontEdge - dU_corner) + fluidRipple;
+        revealMask = smoothstep(-feather, feather, dFront);
+
+        // Leading edge liquid light meniscus glow
+        float frontDist = abs(dFront);
+        meniscusGlow = exp(-frontDist * frontDist / 0.0020f) * saturate(1.0f - RevealProgress * 1.15f);
+    }
+
+    // Coupled effective wave envelope during entrance animation
+    float effectiveWaveEnv = (RevealProgress < 1.0f)
+        ? (ambientFloor + (1.0f - ambientFloor) * segmentEnv * revealMask)
+        : waveEnv;
+
+    // 8. Dynamic Rim Reach / Thickness Calculation (Expanded atmospheric edge reach)
     float effectiveBloom = saturate(Bloom + BeatPulse * 0.40f);
-    float baseReach = (14.0f + wave * 9.0f) * waveEnv * max(0.1f, ThicknessMul);
-    float reach = max(baseReach + effectiveBloom * 12.0f, 3.0f * waveEnv);
+    float baseReach = (14.0f + wave * 9.0f) * effectiveWaveEnv * max(0.1f, ThicknessMul);
+    float reach = max(baseReach + effectiveBloom * 12.0f, 3.0f * effectiveWaveEnv);
 
     // Early discard: pixels deeper than reach + falloff margin
     if (edgeDist > reach + 3.5f)
@@ -94,9 +163,10 @@ float4 PSMain(VS_OUTPUT input) : SV_Target
         discard;
     }
 
-    // 6. Artwork Multi-Color Palette Blend Across Active Perimeter
+    // 9. Artwork Multi-Color Palette Blend Across Active Perimeter
     // Parameterize active illuminated span from trailing tail to leading head [0.0, 1.0]
     float s = saturate((cyclicDiff + activeHalfSpan) / (2.0f * activeHalfSpan));
+
     float3 artworkCol;
     if (s < 0.333f)
     {
@@ -120,12 +190,17 @@ float4 PSMain(VS_OUTPUT input) : SV_Target
     float brightScale = segmentEnv * 0.45f + 1.0f;
     float3 col = saturate(satColor * brightScale);
 
-    // 7. Soft White Luminous Highlight at Wave Crest
-    // Incandescent white core at the center of the revolving wave near physical screen border
+    // 10. Soft White Luminous Highlight at Wave Crest (Centered at selected corner!)
     float angularCore = saturate(1.0f - segDist / 0.09f);
     float depthCore = saturate(1.0f - edgeDist / max(reach * 0.45f, 1.0f));
     float whiteIntensity = angularCore * depthCore * depthCore * 0.75f;
     col = lerp(col, float3(1.0f, 1.0f, 1.0f), whiteIntensity);
+
+    // Add incandescent liquid meniscus tip during reveal
+    if (RevealProgress < 1.0f)
+    {
+        col = saturate(col + meniscusGlow * 0.45f * lerp(HotColor.rgb, float3(1.0f, 1.0f, 1.0f), 0.75f));
+    }
 
     // Dynamic bloom surge modulation
     if (effectiveBloom > 0.0f)
@@ -135,12 +210,17 @@ float4 PSMain(VS_OUTPUT input) : SV_Target
         col = saturate(satBoost * (1.0f + effectiveBloom * 0.85f));
     }
 
-    // 8. Smooth Hermite Falloff (Proportional soft cubic transition)
+    // 11. Smooth Hermite Falloff (Proportional soft cubic transition)
     float falloffSpan = max(reach * 0.35f, 3.0f);
     float alphaFactor = saturate((reach - edgeDist) / falloffSpan);
     float smoothAlpha = alphaFactor * alphaFactor * (3.0f - 2.0f * alphaFactor);
 
     // Output Premultiplied Alpha for DirectComposition
-    float finalAlpha = saturate(smoothAlpha * waveEnv * GlowMultiplier * HotColor.a);
+    float finalAlpha = saturate(smoothAlpha * effectiveWaveEnv * GlowMultiplier * HotColor.a);
+    if (RevealProgress < 1.0f)
+    {
+        finalAlpha *= revealMask;
+    }
+
     return float4(col * finalAlpha, finalAlpha);
 }
