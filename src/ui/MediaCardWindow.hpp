@@ -15,6 +15,7 @@
 
 #include "MediaCardRenderer.hpp"
 #include "../media/MediaSessionWatcher.hpp"
+#include "../settings/LightingSettings.hpp"
 
 namespace lumn::ui
 {
@@ -59,13 +60,19 @@ public:
         ID_TRAY_NEXT        = 2004,
         ID_TRAY_SETTINGS    = 2005,
         ID_TRAY_LIGHTING_STUDIO = 2009,
-        ID_TRAY_STARTUP     = 2006,
-        ID_TRAY_ABOUT       = 2007,
-        ID_TRAY_QUIT        = 2008
+        ID_TRAY_AOD_BLACK       = 2010,
+        ID_TRAY_AOD_WALLPAPER   = 2011,
+        ID_TRAY_AOD_OFF         = 2012,
+        ID_TRAY_STARTUP         = 2006,
+        ID_TRAY_ABOUT           = 2007,
+        ID_TRAY_QUIT            = 2008
     };
 
     void SetOnOpenLightingStudio(std::function<void()> callback) { m_onOpenLightingStudio = std::move(callback); }
-    void SetOnToggleHalo(std::function<void(bool visible)> callback) { m_onToggleHalo = std::move(callback); }
+    void SetOnAODModeChanged(std::function<void(settings::AODMode)> callback) { m_onAODModeChanged = std::move(callback); }
+    void SetAODMode(settings::AODMode mode) noexcept { m_aodMode = mode; }
+    settings::AODMode GetAODMode() const noexcept { return m_aodMode; }
+    void ShowContextMenu();
 
     bool IsStartupEnabled() const;
     bool SetStartupEnabled(bool enable);
@@ -76,7 +83,6 @@ private:
 
     bool InitializeTray();
     void RemoveTray();
-    void ShowContextMenu();
 
     HWND m_hWnd = nullptr;
     HINSTANCE m_hInstance = nullptr;
@@ -111,7 +117,8 @@ private:
     std::chrono::steady_clock::time_point m_optimisticSeekTimestamp{};
 
     std::function<void()> m_onOpenLightingStudio;
-    std::function<void(bool visible)> m_onToggleHalo;
+    settings::AODMode m_aodMode = settings::AODMode::None;
+    std::function<void(settings::AODMode)> m_onAODModeChanged;
 };
 
 } // namespace lumn::ui

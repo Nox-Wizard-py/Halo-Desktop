@@ -237,7 +237,18 @@ LRESULT Window::HandleMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam
     {
     case WM_HOTKEY:
     {
-        if (wParam == HOTKEY_ID_ESC || wParam == HOTKEY_ID_CTRL_SHIFT_Q)
+        if (wParam == HOTKEY_ID_ESC)
+        {
+            if (m_onEscape && m_onEscape())
+            {
+                return 0; // Escape was handled/consumed without quitting application
+            }
+            std::cout << "[Lumn] Exit hotkey received. Shutting down overlay...\n";
+            m_running = false;
+            PostQuitMessage(0);
+            return 0;
+        }
+        else if (wParam == HOTKEY_ID_CTRL_SHIFT_Q)
         {
             std::cout << "[Lumn] Exit hotkey received. Shutting down overlay...\n";
             m_running = false;

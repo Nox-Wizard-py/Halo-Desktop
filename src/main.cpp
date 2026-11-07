@@ -22,6 +22,7 @@
 #include "ui/MediaCardWindow.hpp"
 #include "settings/LightingSettings.hpp"
 #include "ui/LightingStudioWindow.hpp"
+#include "ui/AODWindow.hpp"
 
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, PWSTR /*pCmdLine*/, int /*nCmdShow*/)
 {
@@ -52,6 +53,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, PWSTR /*pC
     bool showCard = true; // Phase 4A Floating Media Card enabled by default
     bool useLiquidGlass = true; // Phase 4B.1 Liquid Glass prototype enabled by default
     int forcedCorner = -1; // -1 = Random (normal operation), 0..3 = Deterministic corner override
+    lumn::settings::AODMode cliAodMode = lumn::settings::AODMode::None;
 
     int argc = 0;
     LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
@@ -101,6 +103,16 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, PWSTR /*pC
             {
                 forcedCorner = std::stoi(argv[++i]);
                 logFile << "[Lumn] Deterministic forced corner = " << forcedCorner << "\n";
+            }
+            else if (arg == L"--aod-black")
+            {
+                cliAodMode = lumn::settings::AODMode::Black;
+                logFile << "[Lumn] Initial AOD mode set to Black via CLI.\n";
+            }
+            else if (arg == L"--aod-wallpaper")
+            {
+                cliAodMode = lumn::settings::AODMode::Wallpaper;
+                logFile << "[Lumn] Initial AOD mode set to Wallpaper via CLI.\n";
             }
         }
         LocalFree(argv);
@@ -184,17 +196,47 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, PWSTR /*pC
         lightingStudio.Show();
     });
 
-    mediaCard.SetOnToggleHalo([&window, &renderer, forcedCorner](bool visible) {
-        if (visible)
-        {
-            window.Show();
-            renderer.TriggerActivationAnimation(forcedCorner);
-        }
-        else
-        {
-            window.Hide();
-        }
+    // Initialize Always-On Display (AOD) Presentation Layer
+    lumn::ui::AODWindow aodWindow;
+    bool aodInitialized = aodWindow.Initialize(hInstance, window.GetHandle(), mediaCard.GetHandle());
+    logFile << "[Lumn] AODWindow.Initialize returned: " << aodInitialized << std::endl;
+
+    auto updateAODMode = [&](lumn::settings::AODMode newMode) {
+        aodWindow.SetMode(newMode);
+        mediaCard.SetAODMode(newMode);
+        lightingConfig.aodMode = newMode;
+        lightingConfig.Save();
+        logFile << "[Lumn] AOD mode updated to: " << static_cast<int>(newMode) << std::endl;
+    };
+
+    mediaCard.SetOnAODModeChanged([updateAODMode](lumn::settings::AODMode mode) {
+        updateAODMode(mode);
     });
+
+    aodWindow.SetOnModeChanged([&mediaCard, &lightingConfig, &logFile](lumn::settings::AODMode mode) {
+        mediaCard.SetAODMode(mode);
+        lightingConfig.aodMode = mode;
+        lightingConfig.Save();
+        logFile << "[Lumn] AODWindow dismissed/changed mode to: " << static_cast<int>(mode) << std::endl;
+    });
+
+    aodWindow.SetOnContextMenu([&mediaCard]() {
+        mediaCard.ShowContextMenu();
+    });
+
+    window.SetOnEscape([&aodWindow, updateAODMode]() -> bool {
+        if (aodWindow.IsActive())
+        {
+            updateAODMode(lumn::settings::AODMode::None);
+            return true;
+        }
+        return false;
+    });
+
+    if (cliAodMode != lumn::settings::AODMode::None)
+    {
+        updateAODMode(cliAodMode);
+    }
 
     // High-resolution timer setup
     LARGE_INTEGER frequency, startTime, currentTime;
@@ -219,8 +261,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, PWSTR /*pC
             break;
         }
 
-        // Pump media card window messages
+        // Pump media card and AOD window messages
         mediaCard.ProcessMessages();
+        aodWindow.ProcessMessages();
 
         QueryPerformanceCounter(&currentTime);
         double elapsedSeconds = static_cast<double>(currentTime.QuadPart - startTime.QuadPart) / frequency.QuadPart;
@@ -313,6 +356,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, PWSTR /*pC
     logFile << "[Lumn] Exited animation loop after " << frameCount << " frames. Shutting down." << std::endl;
     logFile.close();
 
+    aodWindow.Shutdown();
     lightingStudio.Shutdown();
     mediaCard.Shutdown();
     mediaWatcher->Stop();

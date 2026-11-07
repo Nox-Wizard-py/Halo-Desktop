@@ -39,6 +39,8 @@ set(SOURCES
     src/settings/LightingSettings.hpp
     src/ui/LightingStudioWindow.hpp
     src/ui/LightingStudioWindow.cpp
+    src/ui/AODWindow.hpp
+    src/ui/AODWindow.cpp
 )
 
 add_executable(LumnOverlay WIN32 ${SOURCES})
@@ -88,6 +90,7 @@ add_executable(LumnVerification
     src/ui/MediaCardRenderer.cpp
     src/ui/MediaCardWindow.cpp
     src/ui/LightingStudioWindow.cpp
+    src/ui/AODWindow.cpp
     src/render/BackdropSampler.cpp
     src/media/MediaSessionWatcher.cpp
     src/media/ColorExtractor.cpp

@@ -292,8 +292,8 @@ void MediaCardWindow::ShowContextMenu()
     AppendMenuW(hPlaybackMenu, MF_STRING, ID_TRAY_PREV, L"Previous");
     AppendMenuW(hPlaybackMenu, MF_STRING, ID_TRAY_NEXT, L"Next");
 
-    // Dynamic Show/Hide Halo label
-    std::wstring toggleLabel = m_visible ? L"Hide Halo" : L"Show Halo";
+    // Dynamic Show/Hide Media Card label
+    std::wstring toggleLabel = m_visible ? L"Hide Media Card" : L"Show Media Card";
     AppendMenuW(hMenu, MF_STRING, ID_TRAY_TOGGLE_HALO, toggleLabel.c_str());
     SetMenuDefaultItem(hMenu, ID_TRAY_TOGGLE_HALO, FALSE); // Bold primary entry
 
@@ -301,6 +301,21 @@ void MediaCardWindow::ShowContextMenu()
 
     // Playback submenu
     AppendMenuW(hMenu, MF_POPUP, reinterpret_cast<UINT_PTR>(hPlaybackMenu), L"Playback");
+
+    AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
+
+    // Always-On Display submenu
+    HMENU hAodMenu = CreatePopupMenu();
+    UINT blackFlags = MF_STRING | (m_aodMode == settings::AODMode::Black ? MF_CHECKED : MF_UNCHECKED);
+    UINT wpFlags = MF_STRING | (m_aodMode == settings::AODMode::Wallpaper ? MF_CHECKED : MF_UNCHECKED);
+    AppendMenuW(hAodMenu, blackFlags, ID_TRAY_AOD_BLACK, L"AOD · Black");
+    AppendMenuW(hAodMenu, wpFlags, ID_TRAY_AOD_WALLPAPER, L"AOD · Current Wallpaper");
+    if (m_aodMode != settings::AODMode::None)
+    {
+        AppendMenuW(hAodMenu, MF_SEPARATOR, 0, nullptr);
+        AppendMenuW(hAodMenu, MF_STRING, ID_TRAY_AOD_OFF, L"Turn Off AOD");
+    }
+    AppendMenuW(hMenu, MF_POPUP, reinterpret_cast<UINT_PTR>(hAodMenu), L"Always-On Display");
 
     AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
 
@@ -409,18 +424,10 @@ void MediaCardWindow::ToggleVisibility()
     if (m_visible)
     {
         Hide();
-        if (m_onToggleHalo)
-        {
-            m_onToggleHalo(false);
-        }
     }
     else
     {
         Show();
-        if (m_onToggleHalo)
-        {
-            m_onToggleHalo(true);
-        }
     }
 }
 
@@ -759,6 +766,29 @@ LRESULT MediaCardWindow::HandleMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPAR
             if (m_watcher)
             {
                 m_watcher->NextTrack();
+            }
+            return 0;
+
+        case ID_TRAY_AOD_BLACK:
+            if (m_onAODModeChanged)
+            {
+                auto targetMode = (m_aodMode == settings::AODMode::Black) ? settings::AODMode::None : settings::AODMode::Black;
+                m_onAODModeChanged(targetMode);
+            }
+            return 0;
+
+        case ID_TRAY_AOD_WALLPAPER:
+            if (m_onAODModeChanged)
+            {
+                auto targetMode = (m_aodMode == settings::AODMode::Wallpaper) ? settings::AODMode::None : settings::AODMode::Wallpaper;
+                m_onAODModeChanged(targetMode);
+            }
+            return 0;
+
+        case ID_TRAY_AOD_OFF:
+            if (m_onAODModeChanged)
+            {
+                m_onAODModeChanged(settings::AODMode::None);
             }
             return 0;
 

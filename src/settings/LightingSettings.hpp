@@ -16,9 +16,17 @@ enum class ColorSourceMode : int
     Solid   = 2
 };
 
+enum class AODMode : int
+{
+    None      = 0,
+    Black     = 1,
+    Wallpaper = 2
+};
+
 struct LightingConfig
 {
     ColorSourceMode colorSource = ColorSourceMode::Artwork;
+    AODMode         aodMode     = AODMode::None;
 
     // Mixed mode: 3 independently configurable colors (RGBA float [0.0, 1.0])
     float color1[4] = { 0.00f, 0.82f, 1.00f, 1.00f }; // Color 1: Primary vibrant accent (Cyan #00D2FF)
@@ -59,6 +67,23 @@ struct LightingConfig
             else
             {
                 colorSource = ColorSourceMode::Artwork;
+            }
+        }
+
+        dwSize = sizeof(dwVal);
+        if (RegQueryValueExW(hKey, L"AODMode", nullptr, &dwType, reinterpret_cast<LPBYTE>(&dwVal), &dwSize) == ERROR_SUCCESS)
+        {
+            if (dwVal == 1)
+            {
+                aodMode = AODMode::Black;
+            }
+            else if (dwVal == 2)
+            {
+                aodMode = AODMode::Wallpaper;
+            }
+            else
+            {
+                aodMode = AODMode::None;
             }
         }
 
@@ -107,6 +132,9 @@ struct LightingConfig
 
         DWORD dwVal = static_cast<DWORD>(colorSource);
         RegSetValueExW(hKey, L"ColorSource", 0, REG_DWORD, reinterpret_cast<const BYTE*>(&dwVal), sizeof(dwVal));
+
+        DWORD dwAod = static_cast<DWORD>(aodMode);
+        RegSetValueExW(hKey, L"AODMode", 0, REG_DWORD, reinterpret_cast<const BYTE*>(&dwAod), sizeof(dwAod));
 
         auto saveColor = [&](const wchar_t* name, const float col[4]) {
             uint32_t r = std::clamp(static_cast<int>(col[0] * 255.0f + 0.5f), 0, 255);
