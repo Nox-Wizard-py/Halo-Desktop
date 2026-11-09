@@ -1,4 +1,5 @@
 #include "AODWindow.hpp"
+#include "resource.h"
 #include <iostream>
 #include <fstream>
 #include <sstream>
@@ -662,11 +663,16 @@ bool AODWindow::Initialize(HINSTANCE hInstance, HWND hPlasmaWnd, HWND hMediaCard
     CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
 
     // Register Window Class
+    HICON hIconBig = LoadIconW(m_hInstance, MAKEINTRESOURCEW(IDI_APP_ICON));
+    HICON hIconSm = static_cast<HICON>(LoadImageW(m_hInstance, MAKEINTRESOURCEW(IDI_APP_ICON), IMAGE_ICON, GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), LR_DEFAULTCOLOR));
+
     WNDCLASSEXW wc = {};
     wc.cbSize = sizeof(wc);
     wc.style = CS_HREDRAW | CS_VREDRAW;
     wc.lpfnWndProc = WindowProc;
     wc.hInstance = m_hInstance;
+    wc.hIcon = hIconBig;
+    wc.hIconSm = hIconSm;
     wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
     wc.hbrBackground = reinterpret_cast<HBRUSH>(GetStockObject(BLACK_BRUSH));
     wc.lpszClassName = AOD_WINDOW_CLASS;
@@ -705,6 +711,15 @@ bool AODWindow::Initialize(HINSTANCE hInstance, HWND hPlasmaWnd, HWND hMediaCard
     if (!m_hWnd)
     {
         return false;
+    }
+
+    if (hIconBig)
+    {
+        SendMessageW(m_hWnd, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(hIconBig));
+    }
+    if (hIconSm)
+    {
+        SendMessageW(m_hWnd, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(hIconSm));
     }
 
     // Initialize Direct2D factory
