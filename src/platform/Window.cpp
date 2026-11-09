@@ -130,6 +130,7 @@ void Window::Show()
     if (m_hwnd)
     {
         ShowWindow(m_hwnd, SW_SHOWNOACTIVATE);
+        RegisterHotKey(m_hwnd, HOTKEY_ID_ESC, MOD_NOREPEAT, VK_ESCAPE);
     }
 }
 
@@ -137,7 +138,20 @@ void Window::Hide()
 {
     if (m_hwnd)
     {
+        UnregisterHotKey(m_hwnd, HOTKEY_ID_ESC);
         ShowWindow(m_hwnd, SW_HIDE);
+    }
+}
+
+void Window::ToggleVisibility()
+{
+    if (IsVisible())
+    {
+        Hide();
+    }
+    else
+    {
+        Show();
     }
 }
 
@@ -254,10 +268,16 @@ LRESULT Window::HandleMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam
     {
         if (wParam == HOTKEY_ID_ESC)
         {
-            if (m_onEscape && m_onEscape())
+            if (m_onEscape)
             {
-                return 0; // Escape was handled/consumed without quitting application
+                m_onEscape();
             }
+
+            return 0; // Dismiss active visual interface, NEVER terminate application
+        }
+        else if (wParam == HOTKEY_ID_CTRL_SHIFT_Q)
+        {
+            std::cout << "[Halo] Exit hotkey received. Shutting down application...\n";
             std::cout << "[Halo] Exit hotkey received. Shutting down overlay...\n";
             m_running = false;
             PostQuitMessage(0);
@@ -328,13 +348,11 @@ LRESULT Window::HandleMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam
     }
 
     case WM_CLOSE:
-        m_running = false;
-        PostQuitMessage(0);
+        Hide();
         return 0;
 
     case WM_DESTROY:
-        m_running = false;
-        PostQuitMessage(0);
+        m_hwnd = nullptr;
         return 0;
 
     default:

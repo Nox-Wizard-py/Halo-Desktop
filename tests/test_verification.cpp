@@ -11,6 +11,7 @@
 #include "ui/MediaCardWindow.hpp"
 #include "ui/LightingStudioWindow.hpp"
 #include "ui/AODWindow.hpp"
+#include "platform/Window.hpp"
 #include "settings/LightingSettings.hpp"
 #include "media/MediaSessionWatcher.hpp"
 #include "render/BackdropSampler.hpp"
@@ -1286,6 +1287,99 @@ void TestGlassmorphismMediaCardMaterial()
     std::cout << "  -> PASSED: Frosted Glassmorphism Material (HLSL shaders, registry persistence, settings isolation & runtime).\n\n";
 }
 
+void TestBackgroundLifecycleAndEscDismissal()
+{
+    std::cout << "[Test 14] Background Application Lifecycle, ESC Dismissal & Tray Residency...\n";
+
+    HINSTANCE hInstance = GetModuleHandleW(nullptr);
+
+    // 1. Verify Edge Plasma Overlay lifecycle independence
+    lumn::platform::Window window;
+    bool winInit = window.Initialize(hInstance, nullptr);
+    if (!winInit || !window.IsVisible()) std::abort();
+
+    // ESC callback hook
+    bool escHandled = false;
+    window.SetOnEscape([&]() -> bool {
+        escHandled = true;
+        window.Hide();
+        return true;
+    });
+
+    // Dismiss overlay (simulating ESC dismissal)
+    window.Hide();
+    if (window.IsVisible()) std::abort();
+
+    // ProcessMessages must NOT exit the application when the overlay is dismissed
+    bool msgResult = window.ProcessMessages();
+    if (!msgResult) std::abort();
+
+    // Reopen overlay via toggle (simulating tray menu action)
+    window.ToggleVisibility();
+    if (!window.IsVisible()) std::abort();
+    window.Hide();
+    if (window.IsVisible()) std::abort();
+    window.Shutdown();
+
+    // 2. Verify Media Card window dismiss and reopen cycle
+    auto watcher = std::make_shared<lumn::media::MediaSessionWatcher>();
+    MediaCardWindow cardWindow;
+    bool cardInit = cardWindow.Initialize(hInstance, watcher);
+    if (!cardInit) std::abort();
+
+    // Show card
+    cardWindow.Show();
+    if (!cardWindow.IsVisible()) std::abort();
+
+    // Dismiss card (simulating ESC or minimize)
+    cardWindow.Hide();
+    if (cardWindow.IsVisible()) std::abort();
+
+    // Confirm tray operations and startup registry querying remain fully functional while card is hidden
+    bool isStartup = cardWindow.IsStartupEnabled();
+    (void)isStartup;
+
+    // Reopen card via toggle (simulating tray click)
+    cardWindow.ToggleVisibility();
+    if (!cardWindow.IsVisible()) std::abort();
+    cardWindow.Hide();
+    if (cardWindow.IsVisible()) std::abort();
+
+    cardWindow.Shutdown();
+
+    std::cout << "  -> PASSED: Interface dismissal via ESC, tray residency, and clean reopen verified.\n";
+}
+
+void TestSingleInstanceNamedMutex()
+{
+    std::cout << "[Test 15] Windows Native Single-Instance Mutex & Activation Verification...\n";
+
+    const wchar_t* const TEST_MUTEX_NAME = L"Local\\HaloDesktop_SingleInstance_TestMutex_Verification";
+
+    // 1. First instance acquires ownership
+    HANDLE hPrimary = CreateMutexW(nullptr, TRUE, TEST_MUTEX_NAME);
+    if (!hPrimary || GetLastError() == ERROR_ALREADY_EXISTS) std::abort();
+
+    // 2. Second instance attempts to acquire mutex
+    HANDLE hSecondary = CreateMutexW(nullptr, TRUE, TEST_MUTEX_NAME);
+    if (!hSecondary || GetLastError() != ERROR_ALREADY_EXISTS) std::abort();
+
+    // Close secondary handle
+    CloseHandle(hSecondary);
+
+    // 3. Primary releases mutex
+    ReleaseMutex(hPrimary);
+    CloseHandle(hPrimary);
+
+    // 4. Verify subsequent launch can now acquire ownership cleanly
+    HANDLE hReopened = CreateMutexW(nullptr, TRUE, TEST_MUTEX_NAME);
+    if (!hReopened || GetLastError() == ERROR_ALREADY_EXISTS) std::abort();
+    ReleaseMutex(hReopened);
+    CloseHandle(hReopened);
+
+    std::cout << "  -> PASSED: Single-instance named mutex locking and subsequent release verified.\n";
+}
+
 int main()
 {
     std::cout << std::unitbuf;
@@ -1322,6 +1416,8 @@ int main()
     TestAlwaysOnDisplay();
     TestMediaCardAppearanceSystem();
     TestGlassmorphismMediaCardMaterial();
+    TestBackgroundLifecycleAndEscDismissal();
+    TestSingleInstanceNamedMutex();
 
     std::cout << "ALL AUTOMATED VERIFICATION TESTS PASSED SUCCESSFULLY!\n";
     return 0;

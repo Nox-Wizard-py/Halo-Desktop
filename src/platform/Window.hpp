@@ -34,6 +34,7 @@ public:
 
     void Show();
     void Hide();
+    void ToggleVisibility();
     bool IsVisible() const noexcept;
 
     HWND GetHandle() const noexcept { return m_hwnd; }

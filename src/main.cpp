@@ -31,6 +31,24 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, PWSTR /*pC
     // Establish explicit Application User Model ID for Windows taskbar identity and window grouping
     SetCurrentProcessExplicitAppUserModelID(L"Halo.Desktop.App");
 
+    // Single-instance enforcement via named mutex
+    const wchar_t* const SINGLE_INSTANCE_MUTEX_NAME = L"Local\\HaloDesktop_SingleInstance_Mutex_9F8D3B";
+    const wchar_t* const ACTIVATE_INSTANCE_MSG_NAME = L"HaloDesktop_ActivateInstance_9F8D3B";
+
+    UINT wmActivateInstance = RegisterWindowMessageW(ACTIVATE_INSTANCE_MSG_NAME);
+
+    HANDLE hSingleInstanceMutex = CreateMutexW(nullptr, TRUE, SINGLE_INSTANCE_MUTEX_NAME);
+    if (GetLastError() == ERROR_ALREADY_EXISTS)
+    {
+        // An active instance is already running; signal it to reveal itself and exit cleanly
+        PostMessageW(HWND_BROADCAST, wmActivateInstance, 0, 0);
+        if (hSingleInstanceMutex)
+        {
+            CloseHandle(hSingleInstanceMutex);
+        }
+        return 0;
+    }
+
     // Ensure thread is attached to the interactive "default" desktop if launched from an isolated runner/sandbox
     HDESK hCurrentDesk = GetThreadDesktop(GetCurrentThreadId());
     char deskName[128] = {};
@@ -244,13 +262,51 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, PWSTR /*pC
         mediaCard.ShowContextMenu();
     });
 
-    window.SetOnEscape([&aodWindow, updateAODMode]() -> bool {
+    // Unified ESC Key Dismissal Routing:
+    // ESC dismisses the currently active visible interface in priority order.
+    // ESC NEVER terminates the Halo Desktop application process; tray icon remains alive.
+    window.SetOnEscape([&]() -> bool {
+        // Priority 1: If AOD is active, dismiss AOD
         if (aodWindow.IsActive())
         {
             updateAODMode(lumn::settings::AODMode::None);
             return true;
         }
-        return false;
+        // Priority 2: If Lighting Studio is open, close it
+        if (lightingStudio.IsVisible())
+        {
+            lightingStudio.Hide();
+            return true;
+        }
+        // Priority 3: If Media Card is visible, hide it
+        if (mediaCard.IsVisible())
+        {
+            mediaCard.Hide();
+            return true;
+        }
+        // Priority 4: If Plasma Overlay is visible, hide it
+        if (window.IsVisible())
+        {
+            window.Hide();
+            return true;
+        }
+        return true; // Interface dismissed; application remains running in tray
+    });
+
+    // Tray Menu toggle for Plasma Rim Overlay
+    mediaCard.SetOnTogglePlasma([&window, &renderer, forcedCorner]() {
+        if (window.IsVisible())
+        {
+            window.Hide();
+        }
+        else
+        {
+            window.Show();
+            renderer.TriggerActivationAnimation(forcedCorner);
+        }
+    });
+    mediaCard.SetPlasmaVisibleChecker([&window]() {
+        return window.IsVisible();
     });
 
     if (cliAodMode != lumn::settings::AODMode::None)
@@ -273,10 +329,14 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, PWSTR /*pC
     double lastElapsedSeconds = 0.0;
     double accumulatedAnimTime = 0.0;
 
-    while (window.IsRunning())
+    bool appRunning = true;
+    while (appRunning)
     {
         if (!window.ProcessMessages())
         {
+
+            logFile << "[Halo] ProcessMessages returned false (WM_QUIT), exiting loop." << std::endl;
+            appRunning = false;
             logFile << "[Halo] ProcessMessages returned false, exiting loop." << std::endl;
             break;
         }
@@ -297,6 +357,14 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, PWSTR /*pC
         {
             logFile << "[Halo] testExitAfter reached (" << timeSec << "s >= " << testExitAfter << "s). Exiting cleanly." << std::endl;
             break;
+        }
+
+        // Low-power background wait when all visual interfaces are dismissed
+        bool hasVisibleUI = window.IsVisible() || mediaCard.IsVisible() || lightingStudio.IsVisible() || aodWindow.IsActive();
+        if (!hasVisibleUI)
+        {
+            MsgWaitForMultipleObjectsEx(0, nullptr, 50, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+            continue;
         }
 
         // Query current media session track and target palette with generation tracking
@@ -361,10 +429,13 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, PWSTR /*pC
         // Audio clock synchronizes phase (preserves phase across speed changes and freezes when paused)
         lumn::audio::AudioRenderState audioState = clock->Tick(elapsedSeconds, trackInfo.isPlaying, speedMultiplier);
 
-        // Render pass-through rim lighting overlay
-        renderer.Render(animTime, audioState.phase, audioState.bloom, audioState.energy, audioState.beatPulse);
+        // Render pass-through rim lighting overlay ONLY if window is visible
+        if (window.IsVisible())
+        {
+            renderer.Render(animTime, audioState.phase, audioState.bloom, audioState.energy, audioState.beatPulse);
+        }
 
-        // Render interactive floating media card
+        // Render interactive floating media card ONLY if media card is visible
         if (mediaCard.IsVisible())
         {
             mediaCard.Render(timeSec);
@@ -383,6 +454,12 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, PWSTR /*pC
     wasapi.Stop();
     renderer.Shutdown();
     window.Shutdown();
+
+    if (hSingleInstanceMutex)
+    {
+        ReleaseMutex(hSingleInstanceMutex);
+        CloseHandle(hSingleInstanceMutex);
+    }
 
     return 0;
 }

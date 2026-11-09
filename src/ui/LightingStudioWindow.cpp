@@ -1326,6 +1326,14 @@ LRESULT LightingStudioWindow::HandleMessage(HWND hWnd, UINT uMsg, WPARAM wParam,
 {
     switch (uMsg)
     {
+    case WM_KEYDOWN:
+        if (wParam == VK_ESCAPE)
+        {
+            Hide();
+            return 0;
+        }
+        break;
+
     case WM_PAINT:
     {
         PAINTSTRUCT ps;

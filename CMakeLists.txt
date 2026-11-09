@@ -148,6 +148,7 @@ if (BUILD_TESTING AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_verificatio
 
     add_executable(LumnVerification
         tests/test_verification.cpp
+        src/platform/Window.cpp
         src/ui/MediaCardRenderer.cpp
         src/ui/MediaCardWindow.cpp
         src/ui/LightingStudioWindow.cpp

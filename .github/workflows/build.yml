@@ -158,6 +158,66 @@ jobs:
           }
           $zip.Dispose()
 
+      - name: Install Inno Setup
+        shell: powershell
+        run: |
+          $isccCmd = Get-Command iscc -ErrorAction SilentlyContinue
+          if (-not $isccCmd -and -not (Test-Path "C:\Program Files (x86)\Inno Setup 6\ISCC.exe")) {
+              Write-Host "Installing Inno Setup via Chocolatey..."
+              choco install innosetup --no-progress -y
+          }
+
+      - name: Compile Windows Installer (${{ matrix.arch }})
+        shell: powershell
+        run: |
+          $isccPath = $null
+          $isccCmd = Get-Command iscc -ErrorAction SilentlyContinue
+          if ($isccCmd) {
+              $isccPath = $isccCmd.Source
+          } else {
+              $candidates = @(
+                  "C:\Program Files (x86)\Inno Setup 6\ISCC.exe",
+                  "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe"
+              )
+              foreach ($cand in $candidates) {
+                  if (Test-Path $cand) { $isccPath = $cand; break }
+              }
+          }
+          if (-not $isccPath) {
+              Write-Error "ISCC.exe (Inno Setup Compiler) was not found."
+              exit 1
+          }
+          Write-Host "Using Inno Setup compiler: $isccPath"
+          & $isccPath /DAppArch=${{ matrix.arch }} "/DSourceDir=..\build\Release" "/DOutputDir=..\dist" installer\HaloDesktop.iss
+          if ($LASTEXITCODE -ne 0) {
+              Write-Error "Inno Setup compilation failed with exit code $LASTEXITCODE"
+              exit $LASTEXITCODE
+          }
+
+      - name: Validate Installer Package (${{ matrix.arch }})
+        shell: powershell
+        run: |
+          $installerPath = "dist/Halo-Desktop-Setup-${{ matrix.arch }}.exe"
+          if (-not (Test-Path $installerPath)) {
+              Write-Error "Installer executable does not exist: $installerPath"
+              exit 1
+          }
+          $item = Get-Item $installerPath
+          if ($item.Length -le 0) {
+              Write-Error "Installer executable is empty (0 bytes): $installerPath"
+              exit 1
+          }
+          Write-Host "Windows Installer verified: $installerPath ($($item.Length) bytes)"
+
+      - name: Upload Windows Installer (${{ matrix.arch }})
+        uses: actions/upload-artifact@v4
+        with:
+          name: Halo-Desktop-Setup-${{ matrix.arch }}
+          path: dist/Halo-Desktop-Setup-${{ matrix.arch }}.exe
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Upload Portable ZIP Artifact (${{ matrix.arch }})
       - name: Upload Build Artifact (${{ matrix.arch }})
         uses: actions/upload-artifact@v4
         with:
