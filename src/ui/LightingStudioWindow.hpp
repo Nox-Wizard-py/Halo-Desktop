@@ -31,6 +31,7 @@ public:
     bool IsVisible() const;
 
     void SetArtworkPalette(const media::RimPalette& palette);
+    void SetActiveSection(int section);
     HWND GetHandle() const noexcept { return m_hWnd; }
 
 private:
@@ -41,12 +42,17 @@ private:
     void DiscardDeviceResources();
     void Render();
 
+    void RenderPlasmaSection();
+    void RenderMediaCardSection();
+
     void GenerateWheelBitmap(float brightness);
     void UpdateColorFromWheel(float mouseX, float mouseY);
     void UpdateBrightnessFromSlider(float mouseX);
     void UpdateAppearanceSlider(int sliderIndex, float mouseX);
     void SelectColorSlot(int index);
+    void SelectCardColorSlot(int index);
     void ResetDefaults();
+    void ResetMediaCardDefaults();
     void NotifyChanged();
     void ScreenPixelToDip(HWND hWnd, LPARAM lParam, float& outX, float& outY) const;
 
@@ -55,6 +61,11 @@ private:
     settings::LightingConfig* m_config = nullptr;
     OnChangedCallback m_onChanged;
     media::RimPalette m_artworkPalette;
+
+    // Active Section: 0 = Plasma Lighting, 1 = Media Card Appearance
+    int m_currentSection = 0;
+    // Active Media Card color slot: 0 = Custom Color 1, 1 = Custom Color 2, 2 = Custom Color 3
+    int m_cardActiveSlot = 0;
 
     // Direct2D & DirectWrite COM resources
     Microsoft::WRL::ComPtr<ID2D1Factory> m_d2dFactory;
@@ -79,9 +90,12 @@ private:
 
     // Interactive Color Wheel Bitmap
     static constexpr uint32_t WHEEL_SIZE = 136;
-    static constexpr float WHEEL_RADIUS = 64.0f;
+    static constexpr float WHEEL_RADIUS = 60.0f;
     static constexpr float WHEEL_CENTER_X = 220.0f;
-    static constexpr float WHEEL_CENTER_Y = 232.0f;
+    static constexpr float WHEEL_CENTER_Y = 246.0f;
+
+    static constexpr float CARD_WHEEL_CENTER_Y = 328.0f;
+    static constexpr float CARD_WHEEL_RADIUS   = 56.0f;
 
     Microsoft::WRL::ComPtr<ID2D1Bitmap> m_wheelBitmap;
     std::vector<uint32_t> m_wheelPixels;

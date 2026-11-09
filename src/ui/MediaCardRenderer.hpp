@@ -19,6 +19,7 @@
 
 #include "../media/MediaSessionWatcher.hpp"
 #include "../render/BackdropSampler.hpp"
+#include "../settings/LightingSettings.hpp"
 
 namespace lumn::ui
 {
@@ -43,6 +44,28 @@ struct LiquidGlassConstants
     float frostAmount;          // Frosted blur diffusion radius in pixels (~4.5f * CARD_SCALE)
     float frostOpacity;         // Soft frosted translucent substrate scatter (~0.14f)
     float padding[2];           // 16-byte alignment padding
+};
+
+struct GlassmorphismConstants
+{
+    float cardSize[2];          // Physical card dimensions (width, height)
+    float margin[2];            // Backdrop sampling margin
+    float cornerRadii[4];       // (topLeft, topRight, bottomRight, bottomLeft)
+    float blurRadius;           // Diffusion blur radius in physical pixels (~36.0 px * CARD_SCALE)
+    float tintOpacity;          // Neutral dark charcoal surface tint opacity (~0.60)
+    float borderOpacity;        // Subtle boundary stroke opacity (~0.22)
+    float highlightStrength;    // Broad surface highlight intensity (~0.04)
+    float tintColor[4];         // Base dark charcoal surface tint (0.108, 0.110, 0.122, 1.0)
+    float padding[4];           // 16-byte alignment padding
+};
+
+// Phase REA: Separable Gaussian Blur Constant Buffer (Glassmorphism only)
+struct GaussianBlurConstants
+{
+    float blurDir[2];           // Direction in UV units: (1.0/targetW, 0.0) or (0.0, 1.0/targetH)
+    float tapCount;             // Number of bilinear tap pairs (e.g. 8.0)
+    float centerWeight;         // Center sample weight w0
+    float taps[10][4];          // taps[i][0] = offset (pixels), taps[i][1] = weight, [2]=0, [3]=0
 };
 
 enum class CardInteractiveElement
@@ -92,6 +115,26 @@ public:
     bool IsLiquidGlassEnabled() const noexcept { return m_useLiquidGlass; }
     void ToggleLiquidGlass() noexcept { m_useLiquidGlass = !m_useLiquidGlass; }
 
+    // Media Card Appearance System (Solid, Liquid Glass, Mix Custom)
+    void SetCardMaterial(settings::CardMaterial material) noexcept { m_cardMaterial = material; }
+    settings::CardMaterial GetCardMaterial() const noexcept { return m_cardMaterial; }
+
+    void SetSolidColorMode(settings::SolidColorMode mode) noexcept { m_solidColorMode = mode; }
+    settings::SolidColorMode GetSolidColorMode() const noexcept { return m_solidColorMode; }
+
+    void SetGaussianDownsampleRatio(float ratio) noexcept { m_downsampleRatio = (ratio > 0.05f && ratio <= 1.0f) ? ratio : 0.5f; }
+    float GetGaussianDownsampleRatio() const noexcept { return m_downsampleRatio; }
+
+    void SetCustomColors(const float c1[4], const float c2[4], const float c3[4]) noexcept
+    {
+        for (int i = 0; i < 4; ++i)
+        {
+            m_customColor1[i] = c1[i];
+            m_customColor2[i] = c2[i];
+            m_customColor3[i] = c3[i];
+        }
+    }
+
     // Direct2D geometry and layout boundaries
     static D2D1_RECT_F GetProgressBarRect() noexcept { return D2D1::RectF(136.0f, 68.0f, 364.0f, 84.0f); }
     static D2D1_RECT_F GetPreviousButtonRect() noexcept { return D2D1::RectF(164.0f, 100.0f, 196.0f, 132.0f); }
@@ -105,8 +148,13 @@ private:
     bool CreateDirect2D();
     bool CreateTextFormats();
     bool CreateLiquidGlassResources();
+    bool CreateGlassmorphismResources();
+    bool EnsureGaussianIntermediateTextures(uint32_t targetWidth, uint32_t targetHeight);
+    static void ComputeBilinearGaussianTaps(float sigma, float* outCenterWeight, float outTaps[10][4], int* outTapCount);
 
     void RenderLiquidGlassPass(const media::MediaTrackInfo& trackInfo, double currentTimeSec);
+    void RenderGlassmorphismPass(double currentTimeSec);
+    void RenderSolidPass(const media::MediaTrackInfo& trackInfo);
     void UpdateArtworkBitmap(const media::MediaTrackInfo& trackInfo);
     void UpdateDynamicPaletteBrushes(const media::MediaTrackInfo& trackInfo);
     void DrawPlaceholderArtwork(const D2D1_RECT_F& rect);
@@ -177,10 +225,42 @@ private:
     bool m_useLiquidGlass = true;
     float m_dpiScale = 1.0f;
 
+    // Glassmorphism D3D11 Shaders & Resources (Phase REA: Separable Gaussian)
+    Microsoft::WRL::ComPtr<ID3D11VertexShader> m_glassmorphismVS;
+    Microsoft::WRL::ComPtr<ID3D11PixelShader> m_glassmorphismPS;
+    Microsoft::WRL::ComPtr<ID3D11PixelShader> m_gaussianBlurPS;
+    Microsoft::WRL::ComPtr<ID3D11Buffer> m_glassmorphismConstantBuffer;
+    Microsoft::WRL::ComPtr<ID3D11Buffer> m_gaussianConstantBuffer;
+    Microsoft::WRL::ComPtr<ID3D11SamplerState> m_glassmorphismSampler;
+
+    // Separable Gaussian Blur intermediate downsampled targets (Glassmorphism only)
+    float m_downsampleRatio = 0.5f;
+    uint32_t m_downsampleWidth = 0;
+    uint32_t m_downsampleHeight = 0;
+    Microsoft::WRL::ComPtr<ID3D11Texture2D> m_gaussianTexA;
+    Microsoft::WRL::ComPtr<ID3D11RenderTargetView> m_gaussianRTV_A;
+    Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> m_gaussianSRV_A;
+    Microsoft::WRL::ComPtr<ID3D11Texture2D> m_gaussianTexB;
+    Microsoft::WRL::ComPtr<ID3D11RenderTargetView> m_gaussianRTV_B;
+    Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> m_gaussianSRV_B;
+
     // Smoothed palette colors for fluid glass transitions
     float m_smoothedHot[4] = { 0.20f, 0.85f, 1.00f, 1.00f };
     float m_smoothedDeep[4] = { 0.55f, 0.10f, 0.95f, 1.00f };
     bool m_paletteInitialized = false;
+
+    // Media Card Appearance System State
+    settings::CardMaterial m_cardMaterial = settings::CardMaterial::LiquidGlass;
+    settings::SolidColorMode m_solidColorMode = settings::SolidColorMode::DynamicArtwork;
+    float m_customColor1[4] = { 0.12f, 0.22f, 0.35f, 1.0f };
+    float m_customColor2[4] = { 0.18f, 0.12f, 0.28f, 1.0f };
+    float m_customColor3[4] = { 0.08f, 0.18f, 0.24f, 1.0f };
+
+    float m_currentSolidColor[4] = { 0.12f, 0.13f, 0.16f, 1.0f };
+    bool m_solidColorInitialized = false;
+
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_solidFillBrush;
+    Microsoft::WRL::ComPtr<ID2D1LinearGradientBrush> m_solidGradientBrush;
 };
 
 } // namespace lumn::ui

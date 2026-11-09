@@ -42,6 +42,13 @@ public:
     bool IsLiquidGlassEnabled() const noexcept { return m_renderer.IsLiquidGlassEnabled(); }
     void ToggleLiquidGlass() noexcept { m_renderer.ToggleLiquidGlass(); }
 
+    // Media Card Appearance System
+    void SetCardMaterial(settings::CardMaterial material);
+    settings::CardMaterial GetCardMaterial() const noexcept { return m_renderer.GetCardMaterial(); }
+    void SetSolidColorMode(settings::SolidColorMode mode) { m_renderer.SetSolidColorMode(mode); }
+    void SetCustomColors(const float c1[4], const float c2[4], const float c3[4]) { m_renderer.SetCustomColors(c1, c2, c3); }
+    void SetOnMaterialChanged(std::function<void(settings::CardMaterial)> callback) { m_onMaterialChanged = std::move(callback); }
+
     // Renders the media card frame if visible
     void Render(double currentTimeSec);
 
@@ -63,6 +70,9 @@ public:
         ID_TRAY_AOD_BLACK       = 2010,
         ID_TRAY_AOD_WALLPAPER   = 2011,
         ID_TRAY_AOD_OFF         = 2012,
+        ID_TRAY_MATERIAL_SOLID  = 2013,
+        ID_TRAY_MATERIAL_LIQUID_GLASS = 2014,
+        ID_TRAY_MATERIAL_GLASSMORPHISM = 2015,
         ID_TRAY_STARTUP         = 2006,
         ID_TRAY_ABOUT           = 2007,
         ID_TRAY_QUIT            = 2008
@@ -119,6 +129,7 @@ private:
     std::function<void()> m_onOpenLightingStudio;
     settings::AODMode m_aodMode = settings::AODMode::None;
     std::function<void(settings::AODMode)> m_onAODModeChanged;
+    std::function<void(settings::CardMaterial)> m_onMaterialChanged;
 };
 
 } // namespace lumn::ui

@@ -177,6 +177,11 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, PWSTR /*pC
     if (cardInitialized)
     {
         mediaCard.SetLiquidGlassEnabled(useLiquidGlass);
+        mediaCard.SetCardMaterial(lightingConfig.mediaCard.material);
+        mediaCard.SetSolidColorMode(lightingConfig.mediaCard.solidColorMode);
+        mediaCard.SetCustomColors(lightingConfig.mediaCard.customColor1,
+                                  lightingConfig.mediaCard.customColor2,
+                                  lightingConfig.mediaCard.customColor3);
         logFile << "[Lumn] MediaCardWindow liquid glass mode: " << (useLiquidGlass ? "ENABLED" : "DISABLED (Fallback Glass)") << std::endl;
         if (showCard)
         {
@@ -187,9 +192,19 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, PWSTR /*pC
 
     // Initialize Lighting Studio Settings Window
     lumn::ui::LightingStudioWindow lightingStudio;
-    lightingStudio.Initialize(hInstance, &lightingConfig, [&renderer, &lightingConfig]() {
+    lightingStudio.Initialize(hInstance, &lightingConfig, [&renderer, &lightingConfig, &mediaCard]() {
         renderer.SetThickness(lightingConfig.thickness);
         renderer.SetGlowMultiplier(lightingConfig.glowIntensity);
+        mediaCard.SetCardMaterial(lightingConfig.mediaCard.material);
+        mediaCard.SetSolidColorMode(lightingConfig.mediaCard.solidColorMode);
+        mediaCard.SetCustomColors(lightingConfig.mediaCard.customColor1,
+                                  lightingConfig.mediaCard.customColor2,
+                                  lightingConfig.mediaCard.customColor3);
+    });
+
+    mediaCard.SetOnMaterialChanged([&lightingConfig](lumn::settings::CardMaterial mat) {
+        lightingConfig.mediaCard.material = mat;
+        lightingConfig.mediaCard.Save();
     });
 
     mediaCard.SetOnOpenLightingStudio([&lightingStudio]() {

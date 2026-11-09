@@ -304,6 +304,18 @@ void MediaCardWindow::ShowContextMenu()
 
     AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
 
+    // Media Card Style submenu
+    HMENU hStyleMenu = CreatePopupMenu();
+    UINT solidFlags = MF_STRING | (m_renderer.GetCardMaterial() == settings::CardMaterial::Solid ? MF_CHECKED : MF_UNCHECKED);
+    UINT glassFlags = MF_STRING | (m_renderer.GetCardMaterial() == settings::CardMaterial::LiquidGlass ? MF_CHECKED : MF_UNCHECKED);
+    UINT glassmorphismFlags = MF_STRING | (m_renderer.GetCardMaterial() == settings::CardMaterial::Glassmorphism ? MF_CHECKED : MF_UNCHECKED);
+    AppendMenuW(hStyleMenu, solidFlags, ID_TRAY_MATERIAL_SOLID, L"Solid");
+    AppendMenuW(hStyleMenu, glassFlags, ID_TRAY_MATERIAL_LIQUID_GLASS, L"Liquid Glass");
+    AppendMenuW(hStyleMenu, glassmorphismFlags, ID_TRAY_MATERIAL_GLASSMORPHISM, L"Glassmorphism");
+    AppendMenuW(hMenu, MF_POPUP, reinterpret_cast<UINT_PTR>(hStyleMenu), L"Media Card Style");
+
+    AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
+
     // Always-On Display submenu
     HMENU hAodMenu = CreatePopupMenu();
     UINT blackFlags = MF_STRING | (m_aodMode == settings::AODMode::Black ? MF_CHECKED : MF_UNCHECKED);
@@ -428,6 +440,15 @@ void MediaCardWindow::ToggleVisibility()
     else
     {
         Show();
+    }
+}
+
+void MediaCardWindow::SetCardMaterial(settings::CardMaterial material)
+{
+    m_renderer.SetCardMaterial(material);
+    if (m_onMaterialChanged)
+    {
+        m_onMaterialChanged(material);
     }
 }
 
@@ -790,6 +811,18 @@ LRESULT MediaCardWindow::HandleMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPAR
             {
                 m_onAODModeChanged(settings::AODMode::None);
             }
+            return 0;
+
+        case ID_TRAY_MATERIAL_SOLID:
+            SetCardMaterial(settings::CardMaterial::Solid);
+            return 0;
+
+        case ID_TRAY_MATERIAL_LIQUID_GLASS:
+            SetCardMaterial(settings::CardMaterial::LiquidGlass);
+            return 0;
+
+        case ID_TRAY_MATERIAL_GLASSMORPHISM:
+            SetCardMaterial(settings::CardMaterial::Glassmorphism);
             return 0;
 
         case ID_TRAY_SETTINGS:

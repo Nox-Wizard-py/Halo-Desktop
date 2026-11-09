@@ -58,9 +58,10 @@ bool MediaCardRenderer::Initialize(HWND hWnd)
     // If backdrop sampling or shaders fail, m_useLiquidGlass falls back to Phase 4B procedural glass
     UINT dpi = GetDpiForWindow(hWnd);
     m_dpiScale = (dpi > 0) ? (static_cast<float>(dpi) / 96.0f) : 1.0f;
-    uint32_t margin = static_cast<uint32_t>(std::round(24.0f * CARD_SCALE * m_dpiScale));
+    uint32_t margin = static_cast<uint32_t>(std::round(32.0f * CARD_SCALE * m_dpiScale));
     m_backdropSampler.Initialize(m_d3dDevice.Get(), hWnd, CARD_WIDTH, CARD_HEIGHT, margin);
     CreateLiquidGlassResources();
+    CreateGlassmorphismResources();
 
     return true;
 }
@@ -71,12 +72,26 @@ void MediaCardRenderer::Shutdown()
     m_liquidPS.Reset();
     m_liquidConstantBuffer.Reset();
     m_liquidSampler.Reset();
+    m_glassmorphismVS.Reset();
+    m_glassmorphismPS.Reset();
+    m_gaussianBlurPS.Reset();
+    m_glassmorphismConstantBuffer.Reset();
+    m_gaussianConstantBuffer.Reset();
+    m_glassmorphismSampler.Reset();
+    m_gaussianTexA.Reset();
+    m_gaussianRTV_A.Reset();
+    m_gaussianSRV_A.Reset();
+    m_gaussianTexB.Reset();
+    m_gaussianRTV_B.Reset();
+    m_gaussianSRV_B.Reset();
     m_renderTargetView.Reset();
     m_backdropSampler.Shutdown();
 
     m_artworkBitmap.Reset();
     m_cardBgBrush.Reset();
     m_cardBorderBrush.Reset();
+    m_solidFillBrush.Reset();
+    m_solidGradientBrush.Reset();
     m_textWhiteBrush.Reset();
     m_textSecondaryBrush.Reset();
     m_textMutedBrush.Reset();
@@ -469,6 +484,95 @@ bool MediaCardRenderer::CreateLiquidGlassResources()
     return SUCCEEDED(hr);
 }
 
+bool MediaCardRenderer::CreateGlassmorphismResources()
+{
+    if (!m_d3dDevice || !m_swapChain)
+    {
+        return false;
+    }
+
+    UINT compileFlags = D3DCOMPILE_ENABLE_STRICTNESS;
+#if defined(_DEBUG)
+    compileFlags |= D3DCOMPILE_DEBUG;
+#endif
+
+    const std::wstring shaderPaths[] = {
+        L"glassmorphism.hlsl",
+        L"src/render/shaders/glassmorphism.hlsl",
+        L"../src/render/shaders/glassmorphism.hlsl"
+    };
+
+    Microsoft::WRL::ComPtr<ID3DBlob> vsBlob, psBlurBlob, psCompositeBlob, errorBlob;
+    bool compiled = false;
+    HRESULT hr = S_OK;
+
+    for (const auto& path : shaderPaths)
+    {
+        errorBlob.Reset();
+        hr = D3DCompileFromFile(path.c_str(), nullptr, D3D_COMPILE_STANDARD_FILE_INCLUDE,
+                                "VSMain", "vs_5_0", compileFlags, 0, &vsBlob, &errorBlob);
+        if (SUCCEEDED(hr))
+        {
+            hr = D3DCompileFromFile(path.c_str(), nullptr, D3D_COMPILE_STANDARD_FILE_INCLUDE,
+                                    "PS_GaussianBlur", "ps_5_0", compileFlags, 0, &psBlurBlob, &errorBlob);
+            if (SUCCEEDED(hr))
+            {
+                hr = D3DCompileFromFile(path.c_str(), nullptr, D3D_COMPILE_STANDARD_FILE_INCLUDE,
+                                        "PSMain", "ps_5_0", compileFlags, 0, &psCompositeBlob, &errorBlob);
+                if (SUCCEEDED(hr))
+                {
+                    compiled = true;
+                    break;
+                }
+            }
+        }
+    }
+
+    if (!compiled || !vsBlob || !psBlurBlob || !psCompositeBlob)
+    {
+        std::cerr << "[MediaCardRenderer] Warning: Could not compile glassmorphism.hlsl.\n";
+        return false;
+    }
+
+    hr = m_d3dDevice->CreateVertexShader(vsBlob->GetBufferPointer(), vsBlob->GetBufferSize(), nullptr, &m_glassmorphismVS);
+    if (FAILED(hr)) return false;
+
+    hr = m_d3dDevice->CreatePixelShader(psBlurBlob->GetBufferPointer(), psBlurBlob->GetBufferSize(), nullptr, &m_gaussianBlurPS);
+    if (FAILED(hr)) return false;
+
+    hr = m_d3dDevice->CreatePixelShader(psCompositeBlob->GetBufferPointer(), psCompositeBlob->GetBufferSize(), nullptr, &m_glassmorphismPS);
+    if (FAILED(hr)) return false;
+
+    // Create Constant Buffers
+    D3D11_BUFFER_DESC cbDesc = {};
+    cbDesc.ByteWidth = sizeof(GlassmorphismConstants);
+    cbDesc.Usage = D3D11_USAGE_DYNAMIC;
+    cbDesc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+    cbDesc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+
+    hr = m_d3dDevice->CreateBuffer(&cbDesc, nullptr, &m_glassmorphismConstantBuffer);
+    if (FAILED(hr)) return false;
+
+    D3D11_BUFFER_DESC gaussCbDesc = {};
+    gaussCbDesc.ByteWidth = sizeof(GaussianBlurConstants);
+    gaussCbDesc.Usage = D3D11_USAGE_DYNAMIC;
+    gaussCbDesc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+    gaussCbDesc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+
+    hr = m_d3dDevice->CreateBuffer(&gaussCbDesc, nullptr, &m_gaussianConstantBuffer);
+    if (FAILED(hr)) return false;
+
+    // Create Sampler State (Linear Clamp for smooth diffuse blur & bilinear upsampling)
+    D3D11_SAMPLER_DESC sampDesc = {};
+    sampDesc.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
+    sampDesc.AddressU = D3D11_TEXTURE_ADDRESS_CLAMP;
+    sampDesc.AddressV = D3D11_TEXTURE_ADDRESS_CLAMP;
+    sampDesc.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
+
+    hr = m_d3dDevice->CreateSamplerState(&sampDesc, &m_glassmorphismSampler);
+    return SUCCEEDED(hr);
+}
+
 void MediaCardRenderer::RenderLiquidGlassPass([[maybe_unused]] const media::MediaTrackInfo& trackInfo, [[maybe_unused]] double currentTimeSec)
 {
     if (!m_d3dContext || !m_liquidPS || !m_renderTargetView || !m_liquidConstantBuffer || !m_backdropSampler.IsValid())
@@ -556,6 +660,398 @@ void MediaCardRenderer::RenderLiquidGlassPass([[maybe_unused]] const media::Medi
     m_d3dContext->PSSetShaderResources(0, 1, &nullSRV);
     ID3D11RenderTargetView* nullRTV = nullptr;
     m_d3dContext->OMSetRenderTargets(1, &nullRTV, nullptr);
+}
+
+bool MediaCardRenderer::EnsureGaussianIntermediateTextures(uint32_t targetWidth, uint32_t targetHeight)
+{
+    if (m_gaussianTexA && m_gaussianTexB && m_downsampleWidth == targetWidth && m_downsampleHeight == targetHeight)
+    {
+        return true;
+    }
+
+    m_gaussianTexA.Reset();
+    m_gaussianRTV_A.Reset();
+    m_gaussianSRV_A.Reset();
+    m_gaussianTexB.Reset();
+    m_gaussianRTV_B.Reset();
+    m_gaussianSRV_B.Reset();
+
+    m_downsampleWidth = targetWidth;
+    m_downsampleHeight = targetHeight;
+
+    D3D11_TEXTURE2D_DESC texDesc = {};
+    texDesc.Width = targetWidth;
+    texDesc.Height = targetHeight;
+    texDesc.MipLevels = 1;
+    texDesc.ArraySize = 1;
+    texDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    texDesc.SampleDesc.Count = 1;
+    texDesc.SampleDesc.Quality = 0;
+    texDesc.Usage = D3D11_USAGE_DEFAULT;
+    texDesc.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+
+    HRESULT hr = m_d3dDevice->CreateTexture2D(&texDesc, nullptr, &m_gaussianTexA);
+    if (FAILED(hr)) return false;
+
+    hr = m_d3dDevice->CreateTexture2D(&texDesc, nullptr, &m_gaussianTexB);
+    if (FAILED(hr)) return false;
+
+    D3D11_RENDER_TARGET_VIEW_DESC rtvDesc = {};
+    rtvDesc.Format = texDesc.Format;
+    rtvDesc.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2D;
+
+    hr = m_d3dDevice->CreateRenderTargetView(m_gaussianTexA.Get(), &rtvDesc, &m_gaussianRTV_A);
+    if (FAILED(hr)) return false;
+
+    hr = m_d3dDevice->CreateRenderTargetView(m_gaussianTexB.Get(), &rtvDesc, &m_gaussianRTV_B);
+    if (FAILED(hr)) return false;
+
+    D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+    srvDesc.Format = texDesc.Format;
+    srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+    srvDesc.Texture2D.MipLevels = 1;
+
+    hr = m_d3dDevice->CreateShaderResourceView(m_gaussianTexA.Get(), &srvDesc, &m_gaussianSRV_A);
+    if (FAILED(hr)) return false;
+
+    hr = m_d3dDevice->CreateShaderResourceView(m_gaussianTexB.Get(), &srvDesc, &m_gaussianSRV_B);
+    if (FAILED(hr)) return false;
+
+    return true;
+}
+
+void MediaCardRenderer::ComputeBilinearGaussianTaps(float sigma, float* outCenterWeight, float outTaps[10][4], int* outTapCount)
+{
+    if (!outCenterWeight || !outTaps || !outTapCount) return;
+
+    if (sigma <= 0.1f)
+    {
+        *outCenterWeight = 1.0f;
+        *outTapCount = 0;
+        return;
+    }
+
+    constexpr int MAX_PAIRS = 10;
+    int tapRadius = std::min(MAX_PAIRS * 2, static_cast<int>(std::ceil(2.5f * sigma)));
+    int pairCount = std::min(MAX_PAIRS, (tapRadius + 1) / 2);
+    if (pairCount < 1) pairCount = 1;
+
+    // 1. Compute discrete Gaussian weights: w(x) = exp(-x^2 / (2 * sigma^2))
+    float twoSigmaSq = 2.0f * sigma * sigma;
+    float w0 = 1.0f;
+    float sumWeights = w0;
+
+    float rawWeights[MAX_PAIRS * 2 + 1] = {};
+    for (int i = 1; i <= pairCount * 2; ++i)
+    {
+        float w = std::exp(-(static_cast<float>(i * i)) / twoSigmaSq);
+        rawWeights[i] = w;
+    }
+
+    // 2. Combine pairs into bilinear taps: offset = (x1*w1 + x2*w2)/(w1+w2)
+    float pairWeights[MAX_PAIRS] = {};
+    float pairOffsets[MAX_PAIRS] = {};
+
+    for (int k = 0; k < pairCount; ++k)
+    {
+        int x1 = 2 * k + 1;
+        int x2 = 2 * k + 2;
+        float w1 = rawWeights[x1];
+        float w2 = rawWeights[x2];
+        float W = w1 + w2;
+
+        if (W > 1e-7f)
+        {
+            float off = (static_cast<float>(x1) * w1 + static_cast<float>(x2) * w2) / W;
+            pairOffsets[k] = off;
+            pairWeights[k] = W;
+        }
+        else
+        {
+            pairOffsets[k] = static_cast<float>(x1);
+            pairWeights[k] = 0.0f;
+        }
+        sumWeights += 2.0f * pairWeights[k];
+    }
+
+    // 3. Normalize all weights so total energy sum == 1.0
+    float invSum = 1.0f / sumWeights;
+    *outCenterWeight = w0 * invSum;
+    *outTapCount = pairCount;
+
+    for (int k = 0; k < MAX_PAIRS; ++k)
+    {
+        if (k < pairCount)
+        {
+            outTaps[k][0] = pairOffsets[k];
+            outTaps[k][1] = pairWeights[k] * invSum;
+        }
+        else
+        {
+            outTaps[k][0] = 0.0f;
+            outTaps[k][1] = 0.0f;
+        }
+        outTaps[k][2] = 0.0f;
+        outTaps[k][3] = 0.0f;
+    }
+}
+
+void MediaCardRenderer::RenderGlassmorphismPass([[maybe_unused]] double currentTimeSec)
+{
+    if (!m_d3dContext || !m_glassmorphismPS || !m_gaussianBlurPS || !m_renderTargetView ||
+        !m_glassmorphismConstantBuffer || !m_gaussianConstantBuffer || !m_backdropSampler.IsValid())
+    {
+        return;
+    }
+
+    // 1. Capture localized desktop backdrop directly behind the card (including margin)
+    m_backdropSampler.Capture(m_hWnd, m_d3dContext.Get());
+
+    uint32_t capturedW = m_backdropSampler.GetCapturedWidth();
+    uint32_t capturedH = m_backdropSampler.GetCapturedHeight();
+
+    uint32_t dsW = std::max(1u, static_cast<uint32_t>(capturedW * m_downsampleRatio));
+    uint32_t dsH = std::max(1u, static_cast<uint32_t>(capturedH * m_downsampleRatio));
+
+    if (!EnsureGaussianIntermediateTextures(dsW, dsH))
+    {
+        return;
+    }
+
+    // 2. Precompute analytical Gaussian taps based on downsampled sigma
+    float effectiveBlur = 36.0f * CARD_SCALE * m_dpiScale;
+    float dsBlur = effectiveBlur * m_downsampleRatio;
+    float sigma = std::max(dsBlur / 2.5f, 0.5f);
+
+    int tapCount = 0;
+    float centerWeight = 0.0f;
+    float taps[10][4] = {};
+    ComputeBilinearGaussianTaps(sigma, &centerWeight, taps, &tapCount);
+
+    D3D11_VIEWPORT dsVp = { 0.0f, 0.0f, static_cast<float>(dsW), static_cast<float>(dsH), 0.0f, 1.0f };
+    ID3D11ShaderResourceView* nullSRV = nullptr;
+    ID3D11RenderTargetView* nullRTV = nullptr;
+
+    // --------------------------------------------------------------------------
+    // Pass 1: Horizontal Gaussian Blur (from BackdropSampler into GaussianTexA)
+    // --------------------------------------------------------------------------
+    D3D11_MAPPED_SUBRESOURCE mapped = {};
+    if (SUCCEEDED(m_d3dContext->Map(m_gaussianConstantBuffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped)))
+    {
+        auto* cb = static_cast<GaussianBlurConstants*>(mapped.pData);
+        cb->blurDir[0] = 1.0f / static_cast<float>(dsW);
+        cb->blurDir[1] = 0.0f;
+        cb->tapCount = static_cast<float>(tapCount);
+        cb->centerWeight = centerWeight;
+        memcpy(cb->taps, taps, sizeof(taps));
+        m_d3dContext->Unmap(m_gaussianConstantBuffer.Get(), 0);
+    }
+
+    m_d3dContext->OMSetRenderTargets(1, m_gaussianRTV_A.GetAddressOf(), nullptr);
+    m_d3dContext->RSSetViewports(1, &dsVp);
+
+    m_d3dContext->VSSetShader(m_glassmorphismVS.Get(), nullptr, 0);
+    m_d3dContext->PSSetShader(m_gaussianBlurPS.Get(), nullptr, 0);
+    m_d3dContext->PSSetConstantBuffers(0, 1, m_gaussianConstantBuffer.GetAddressOf());
+
+    ID3D11ShaderResourceView* backdropSRV = m_backdropSampler.GetShaderResourceView();
+    m_d3dContext->PSSetShaderResources(0, 1, &backdropSRV);
+    m_d3dContext->PSSetSamplers(0, 1, m_glassmorphismSampler.GetAddressOf());
+
+    m_d3dContext->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    m_d3dContext->Draw(3, 0);
+
+    // Unbind Pass 1 resources
+    m_d3dContext->PSSetShaderResources(0, 1, &nullSRV);
+    m_d3dContext->OMSetRenderTargets(1, &nullRTV, nullptr);
+
+    // --------------------------------------------------------------------------
+    // Pass 2: Vertical Gaussian Blur (from GaussianTexA into GaussianTexB)
+    // --------------------------------------------------------------------------
+    if (SUCCEEDED(m_d3dContext->Map(m_gaussianConstantBuffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped)))
+    {
+        auto* cb = static_cast<GaussianBlurConstants*>(mapped.pData);
+        cb->blurDir[0] = 0.0f;
+        cb->blurDir[1] = 1.0f / static_cast<float>(dsH);
+        cb->tapCount = static_cast<float>(tapCount);
+        cb->centerWeight = centerWeight;
+        memcpy(cb->taps, taps, sizeof(taps));
+        m_d3dContext->Unmap(m_gaussianConstantBuffer.Get(), 0);
+    }
+
+    m_d3dContext->OMSetRenderTargets(1, m_gaussianRTV_B.GetAddressOf(), nullptr);
+    m_d3dContext->RSSetViewports(1, &dsVp);
+
+    m_d3dContext->PSSetShader(m_gaussianBlurPS.Get(), nullptr, 0);
+    m_d3dContext->PSSetConstantBuffers(0, 1, m_gaussianConstantBuffer.GetAddressOf());
+
+    m_d3dContext->PSSetShaderResources(0, 1, m_gaussianSRV_A.GetAddressOf());
+    m_d3dContext->PSSetSamplers(0, 1, m_glassmorphismSampler.GetAddressOf());
+
+    m_d3dContext->Draw(3, 0);
+
+    // Unbind Pass 2 resources
+    m_d3dContext->PSSetShaderResources(0, 1, &nullSRV);
+    m_d3dContext->OMSetRenderTargets(1, &nullRTV, nullptr);
+
+    // --------------------------------------------------------------------------
+    // Pass 3: Final Glassmorphism Composite (from GaussianTexB into Swapchain)
+    // --------------------------------------------------------------------------
+    float clearColor[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+    m_d3dContext->OMSetRenderTargets(1, m_renderTargetView.GetAddressOf(), nullptr);
+    m_d3dContext->ClearRenderTargetView(m_renderTargetView.Get(), clearColor);
+
+    D3D11_VIEWPORT cardVp = { 0.0f, 0.0f, static_cast<float>(CARD_WIDTH), static_cast<float>(CARD_HEIGHT), 0.0f, 1.0f };
+    m_d3dContext->RSSetViewports(1, &cardVp);
+
+    if (SUCCEEDED(m_d3dContext->Map(m_glassmorphismConstantBuffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped)))
+    {
+        auto* cb = static_cast<GlassmorphismConstants*>(mapped.pData);
+        float marginVal = static_cast<float>(m_backdropSampler.GetMargin());
+
+        cb->cardSize[0] = static_cast<float>(CARD_WIDTH);
+        cb->cardSize[1] = static_cast<float>(CARD_HEIGHT);
+        cb->margin[0] = marginVal;
+        cb->margin[1] = marginVal;
+
+        cb->cornerRadii[0] = 18.0f * CARD_SCALE;
+        cb->cornerRadii[1] = 18.0f * CARD_SCALE;
+        cb->cornerRadii[2] = 18.0f * CARD_SCALE;
+        cb->cornerRadii[3] = 18.0f * CARD_SCALE;
+
+        cb->blurRadius = effectiveBlur;
+        cb->tintOpacity = 0.38f;   // More translucent see-through frosted glass
+        cb->borderOpacity = 0.26f; // Slightly crisper boundary against see-through body
+        cb->highlightStrength = 0.04f;
+
+        cb->tintColor[0] = 0.108f;
+        cb->tintColor[1] = 0.110f;
+        cb->tintColor[2] = 0.122f;
+        cb->tintColor[3] = 1.0f;
+
+        for (int i = 0; i < 4; ++i) cb->padding[i] = 0.0f;
+
+        m_d3dContext->Unmap(m_glassmorphismConstantBuffer.Get(), 0);
+    }
+
+    m_d3dContext->PSSetShader(m_glassmorphismPS.Get(), nullptr, 0);
+    m_d3dContext->PSSetConstantBuffers(0, 1, m_glassmorphismConstantBuffer.GetAddressOf());
+
+    m_d3dContext->PSSetShaderResources(0, 1, m_gaussianSRV_B.GetAddressOf());
+    m_d3dContext->PSSetSamplers(0, 1, m_glassmorphismSampler.GetAddressOf());
+
+    m_d3dContext->Draw(3, 0);
+
+    // Unbind Pass 3 resources to allow clean handoff to Direct2D
+    m_d3dContext->PSSetShaderResources(0, 1, &nullSRV);
+    m_d3dContext->OMSetRenderTargets(1, &nullRTV, nullptr);
+}
+
+void MediaCardRenderer::RenderSolidPass(const media::MediaTrackInfo& trackInfo)
+{
+    m_d2dContext->BeginDraw();
+    m_d2dContext->SetTransform(D2D1::Matrix3x2F::Scale(CARD_SCALE, CARD_SCALE));
+    m_d2dContext->Clear(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.0f)); // Transparent canvas outside card
+
+    // 1. Soft Penumbra / Drop Shadow below card
+    D2D1_ROUNDED_RECT shadowRect = D2D1::RoundedRect(
+        D2D1::RectF(0.5f, 2.5f, BASE_CARD_WIDTH - 0.5f, BASE_CARD_HEIGHT + 2.0f),
+        18.0f, 18.0f
+    );
+    if (!m_cardShadowBrush)
+    {
+        m_d2dContext->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.40f), &m_cardShadowBrush);
+    }
+    if (m_cardShadowBrush)
+    {
+        m_d2dContext->FillRoundedRectangle(shadowRect, m_cardShadowBrush.Get());
+    }
+
+    // 2. Card Background Body
+    D2D1_ROUNDED_RECT cardRect = D2D1::RoundedRect(
+        D2D1::RectF(0.5f, 0.5f, BASE_CARD_WIDTH - 0.5f, BASE_CARD_HEIGHT - 0.5f),
+        18.0f, 18.0f
+    );
+
+    if (m_solidColorMode == settings::SolidColorMode::DynamicArtwork)
+    {
+        // Extract dominant artwork tone
+        const float* dominant = trackInfo.palette.hot;
+        auto hsb = media::ColorExtractor::RGBtoHSB(dominant[0], dominant[1], dominant[2]);
+
+        // Material 3 Dark Surface Container derivation:
+        float sat = std::clamp(hsb.s * 0.40f, 0.08f, 0.30f);
+        float bri = 0.11f + (1.0f - sat) * 0.04f;
+        auto rgb = media::ColorExtractor::HSBtoRGB(hsb.h, sat, bri);
+
+        float targetCol[4] = { rgb.r, rgb.g, rgb.b, 1.0f };
+        if (!m_solidColorInitialized)
+        {
+            std::memcpy(m_currentSolidColor, targetCol, sizeof(m_currentSolidColor));
+            m_solidColorInitialized = true;
+        }
+        else
+        {
+            float alpha = 0.08f;
+            for (int i = 0; i < 3; ++i)
+            {
+                m_currentSolidColor[i] += (targetCol[i] - m_currentSolidColor[i]) * alpha;
+            }
+        }
+
+        if (!m_solidFillBrush)
+        {
+            m_d2dContext->CreateSolidColorBrush(
+                D2D1::ColorF(m_currentSolidColor[0], m_currentSolidColor[1], m_currentSolidColor[2], 1.0f),
+                &m_solidFillBrush
+            );
+        }
+        else
+        {
+            m_solidFillBrush->SetColor(D2D1::ColorF(m_currentSolidColor[0], m_currentSolidColor[1], m_currentSolidColor[2], 1.0f));
+        }
+
+        m_d2dContext->FillRoundedRectangle(cardRect, m_solidFillBrush.Get());
+    }
+    else
+    {
+        // Mix Custom: 3-stop linear gradient
+        D2D1_GRADIENT_STOP stops[3] = {
+            { 0.0f, D2D1::ColorF(m_customColor1[0], m_customColor1[1], m_customColor1[2], 1.0f) },
+            { 0.5f, D2D1::ColorF(m_customColor2[0], m_customColor2[1], m_customColor2[2], 1.0f) },
+            { 1.0f, D2D1::ColorF(m_customColor3[0], m_customColor3[1], m_customColor3[2], 1.0f) }
+        };
+
+        Microsoft::WRL::ComPtr<ID2D1GradientStopCollection> stopCollection;
+        m_d2dContext->CreateGradientStopCollection(stops, 3, &stopCollection);
+        if (stopCollection)
+        {
+            m_solidGradientBrush.Reset();
+            m_d2dContext->CreateLinearGradientBrush(
+                D2D1::LinearGradientBrushProperties(
+                    D2D1::Point2F(0.0f, 0.0f),
+                    D2D1::Point2F(static_cast<float>(BASE_CARD_WIDTH), static_cast<float>(BASE_CARD_HEIGHT))
+                ),
+                stopCollection.Get(),
+                &m_solidGradientBrush
+            );
+        }
+
+        if (m_solidGradientBrush)
+        {
+            m_d2dContext->FillRoundedRectangle(cardRect, m_solidGradientBrush.Get());
+        }
+    }
+
+    // Subtle crisp boundary stroke
+    if (!m_cardBorderBrush)
+    {
+        m_d2dContext->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.08f), &m_cardBorderBrush);
+    }
+    if (m_cardBorderBrush)
+    {
+        m_d2dContext->DrawRoundedRectangle(cardRect, m_cardBorderBrush.Get(), 1.0f);
+    }
 }
 
 void MediaCardRenderer::UpdateArtworkBitmap(const media::MediaTrackInfo& trackInfo)
@@ -923,7 +1419,65 @@ void MediaCardRenderer::Render(const media::MediaTrackInfo& trackInfo,
     UpdateArtworkBitmap(trackInfo);
     UpdateDynamicPaletteBrushes(trackInfo);
 
-    if (m_useLiquidGlass && m_liquidPS && m_backdropSampler.IsValid())
+    if (m_cardMaterial == settings::CardMaterial::Solid)
+    {
+        RenderSolidPass(trackInfo);
+    }
+    else if (m_cardMaterial == settings::CardMaterial::Glassmorphism && m_glassmorphismPS && m_backdropSampler.IsValid())
+    {
+        // Glassmorphism: D3D11 Frosted Glass Background Pass with Real Backdrop Diffusion
+        RenderGlassmorphismPass(currentTimeSec);
+
+        // Direct2D Foreground Elements Pass (Scaled 2.3x)
+        m_d2dContext->BeginDraw();
+        m_d2dContext->SetTransform(D2D1::Matrix3x2F::Scale(CARD_SCALE, CARD_SCALE));
+
+        D2D1_ROUNDED_RECT cardRect = D2D1::RoundedRect(
+            D2D1::RectF(0.5f, 0.5f, BASE_CARD_WIDTH - 0.5f, BASE_CARD_HEIGHT - 0.5f),
+            18.0f, 18.0f
+        );
+        if (m_cardBorderBrush)
+        {
+            m_d2dContext->DrawRoundedRectangle(cardRect, m_cardBorderBrush.Get(), 1.0f);
+        }
+    }
+    else if (m_cardMaterial == settings::CardMaterial::Glassmorphism)
+    {
+        // Fallback for Glassmorphism if shader/backdrop sampler is unavailable
+        m_d2dContext->BeginDraw();
+        m_d2dContext->SetTransform(D2D1::Matrix3x2F::Scale(CARD_SCALE, CARD_SCALE));
+        m_d2dContext->Clear(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.0f));
+
+        // Soft Penumbra / Drop Shadow below card
+        D2D1_ROUNDED_RECT shadowRect = D2D1::RoundedRect(
+            D2D1::RectF(0.5f, 2.5f, BASE_CARD_WIDTH - 0.5f, BASE_CARD_HEIGHT + 2.0f),
+            18.0f, 18.0f
+        );
+        if (m_cardShadowBrush)
+        {
+            m_d2dContext->FillRoundedRectangle(shadowRect, m_cardShadowBrush.Get());
+        }
+
+        D2D1_ROUNDED_RECT cardRect = D2D1::RoundedRect(
+            D2D1::RectF(0.5f, 0.5f, BASE_CARD_WIDTH - 0.5f, BASE_CARD_HEIGHT - 0.5f),
+            18.0f, 18.0f
+        );
+        if (!m_solidFillBrush)
+        {
+            m_d2dContext->CreateSolidColorBrush(D2D1::ColorF(0.105f, 0.108f, 0.120f, 0.82f), &m_solidFillBrush);
+        }
+        else
+        {
+            m_solidFillBrush->SetColor(D2D1::ColorF(0.108f, 0.110f, 0.122f, 0.38f));
+        }
+        m_d2dContext->FillRoundedRectangle(cardRect, m_solidFillBrush.Get());
+
+        if (m_cardBorderBrush)
+        {
+            m_d2dContext->DrawRoundedRectangle(cardRect, m_cardBorderBrush.Get(), 1.0f);
+        }
+    }
+    else if (m_useLiquidGlass && m_liquidPS && m_backdropSampler.IsValid())
     {
         // Phase 4B.1: D3D11 Liquid Glass Background Pass with Real Backdrop Refraction
         RenderLiquidGlassPass(trackInfo, currentTimeSec);

@@ -20,6 +20,7 @@ set(SOURCES
     src/render/BackdropSampler.cpp
     src/render/shaders/plasmaRim.hlsl
     src/render/shaders/liquidGlass.hlsl
+    src/render/shaders/glassmorphism.hlsl
     src/audio/BassFilter.hpp
     src/audio/BassFilter.cpp
     src/audio/BeatDetector.hpp
@@ -79,6 +80,9 @@ add_custom_command(TARGET LumnOverlay POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "${CMAKE_CURRENT_SOURCE_DIR}/src/render/shaders/liquidGlass.hlsl"
         "$<TARGET_FILE_DIR:LumnOverlay>/liquidGlass.hlsl"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/render/shaders/glassmorphism.hlsl"
+        "$<TARGET_FILE_DIR:LumnOverlay>/glassmorphism.hlsl"
     COMMENT "Copying HLSL shaders to target output directory"
 )
 
@@ -129,6 +133,9 @@ add_custom_command(TARGET LumnVerification POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "${CMAKE_CURRENT_SOURCE_DIR}/src/render/shaders/liquidGlass.hlsl"
         "$<TARGET_FILE_DIR:LumnVerification>/liquidGlass.hlsl"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/render/shaders/glassmorphism.hlsl"
+        "$<TARGET_FILE_DIR:LumnVerification>/glassmorphism.hlsl"
     COMMENT "Copying liquidGlass.hlsl to verification output directory"
 )
 
