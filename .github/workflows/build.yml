@@ -1,0 +1,158 @@
+name: Build Halo Desktop
+
+"on":
+  push:
+    branches:
+      - '**'
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build ${{ matrix.arch_display }} (${{ matrix.arch }})
+    runs-on: windows-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            arch_display: x86_64 (AMD64)
+            cmake_arch: x64
+            run_tests: true
+          - arch: arm64
+            arch_display: ARM64
+            cmake_arch: ARM64
+            run_tests: false
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure CMake (Visual Studio 2022 - ${{ matrix.arch_display }})
+        run: |
+          cmake -B build -G "Visual Studio 17 2022" -A ${{ matrix.cmake_arch }} -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build Halo Desktop (${{ matrix.arch }})
+        run: |
+          cmake --build build --config Release --target LumnOverlay
+
+      - name: Build Automated Tests (${{ matrix.arch }})
+        if: matrix.run_tests
+        run: |
+          cmake --build build --config Release --target LumnVerification
+
+      - name: Run Automated Verification Tests (x64 only)
+        if: matrix.run_tests
+        run: |
+          .\build\Release\LumnVerification.exe
+
+      - name: Note ARM64 Runtime Validation Policy
+        if: "!matrix.run_tests"
+        run: |
+          Write-Host "Notice: Runtime execution is skipped on ARM64 cross-compilation target."
+          Write-Host "GitHub-hosted x64 Windows runners cannot execute native ARM64 binaries."
+          Write-Host "Binary integrity is verified via PE header architecture analysis below."
+
+      - name: Verify Binary Architecture (${{ matrix.arch }})
+        shell: powershell
+        run: |
+          $exePath = "build/Release/LumnOverlay.exe"
+          if (-not (Test-Path $exePath)) {
+              Write-Error "Compiled executable not found at: $exePath"
+              exit 1
+          }
+          $bytes = [System.IO.File]::ReadAllBytes($exePath)
+          $peOffset = [System.BitConverter]::ToUInt32($bytes, 0x3C)
+          $machine = [System.BitConverter]::ToUInt16($bytes, $peOffset + 4)
+          $expectedArch = "${{ matrix.arch }}"
+          if ($expectedArch -eq "arm64") {
+              if ($machine -ne 0xAA64) {
+                  Write-Error "Machine type 0x$($machine.ToString('X4')) does not match expected ARM64 (0xAA64)."
+                  exit 1
+              }
+              Write-Host "Successfully verified authentic Windows ARM64 PE executable (Machine=0xAA64)."
+          } elseif ($expectedArch -eq "x64") {
+              if ($machine -ne 0x8664) {
+                  Write-Error "Machine type 0x$($machine.ToString('X4')) does not match expected x64 AMD64 (0x8664)."
+                  exit 1
+              }
+              Write-Host "Successfully verified authentic Windows x64 AMD64 PE executable (Machine=0x8664)."
+          }
+
+      - name: Verify Executable File
+        shell: powershell
+        run: |
+          $exePath = "build/Release/LumnOverlay.exe"
+          $item = Get-Item $exePath
+          if ($item.Length -le 0) {
+              Write-Error "Executable file is empty (0 bytes): $exePath"
+              exit 1
+          }
+          Write-Host "Executable verified: $exePath ($($item.Length) bytes)"
+
+      - name: Package Release Artifacts (${{ matrix.arch }})
+        shell: powershell
+        run: |
+          $stageDir = "dist/staging"
+          if (Test-Path $stageDir) { Remove-Item -Recurse -Force $stageDir }
+          New-Item -ItemType Directory -Path "$stageDir/licenses" -Force | Out-Null
+          New-Item -ItemType Directory -Path "dist" -Force | Out-Null
+
+          # Copy compiled executable
+          Copy-Item "build/Release/LumnOverlay.exe" $stageDir
+
+          # Copy required runtime HLSL shaders
+          Copy-Item "src/render/shaders/plasmaRim.hlsl" $stageDir
+          Copy-Item "src/render/shaders/liquidGlass.hlsl" $stageDir
+          Copy-Item "src/render/shaders/glassmorphism.hlsl" $stageDir
+
+          # Copy licence and notices
+          Copy-Item "LICENSE" $stageDir
+          Copy-Item "THIRD_PARTY_NOTICES.md" $stageDir
+          Copy-Item "licenses/Apache-2.0.txt" "$stageDir/licenses"
+
+          # Package into release ZIP
+          $zipPath = "dist/Halo-Desktop-windows-${{ matrix.arch }}.zip"
+          Compress-Archive -Path "$stageDir/*" -DestinationPath $zipPath -Force
+
+      - name: Validate Packaged ZIP (${{ matrix.arch }})
+        shell: powershell
+        run: |
+          $zipPath = "dist/Halo-Desktop-windows-${{ matrix.arch }}.zip"
+          if (-not (Test-Path $zipPath)) {
+              Write-Error "Packaged ZIP file does not exist: $zipPath"
+              exit 1
+          }
+          $zipItem = Get-Item $zipPath
+          if ($zipItem.Length -le 0) {
+              Write-Error "Packaged ZIP file is empty (0 bytes): $zipPath"
+              exit 1
+          }
+          Write-Host "Packaged ZIP verified: $zipPath ($($zipItem.Length) bytes)"
+
+          # Inspect ZIP contents
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $zip = [System.IO.Compression.ZipFile]::OpenRead((Resolve-Path $zipPath).Path)
+          Write-Host "ZIP entries ($($zip.Entries.Count)):"
+          foreach ($entry in $zip.Entries) {
+              Write-Host "  - $($entry.FullName) ($($entry.Length) bytes)"
+          }
+          $zip.Dispose()
+
+      - name: Upload Build Artifact (${{ matrix.arch }})
+        uses: actions/upload-artifact@v4
+        with:
+          name: Halo-Desktop-windows-${{ matrix.arch }}
+          path: dist/Halo-Desktop-windows-${{ matrix.arch }}.zip
+          retention-days: 30
+          if-no-files-found: error
