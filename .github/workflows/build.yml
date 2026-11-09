@@ -161,8 +161,8 @@ jobs:
       - name: Install Inno Setup
         shell: powershell
         run: |
-          $iscc = (Get-Command iscc -ErrorAction SilentlyContinue)?.Source
-          if (-not $iscc -and -not (Test-Path "C:\Program Files (x86)\Inno Setup 6\ISCC.exe")) {
+          $isccCmd = Get-Command iscc -ErrorAction SilentlyContinue
+          if (-not $isccCmd -and -not (Test-Path "C:\Program Files (x86)\Inno Setup 6\ISCC.exe")) {
               Write-Host "Installing Inno Setup via Chocolatey..."
               choco install innosetup --no-progress -y
           }
@@ -170,8 +170,11 @@ jobs:
       - name: Compile Windows Installer (${{ matrix.arch }})
         shell: powershell
         run: |
-          $isccPath = (Get-Command iscc -ErrorAction SilentlyContinue)?.Source
-          if (-not $isccPath) {
+          $isccPath = $null
+          $isccCmd = Get-Command iscc -ErrorAction SilentlyContinue
+          if ($isccCmd) {
+              $isccPath = $isccCmd.Source
+          } else {
               $candidates = @(
                   "C:\Program Files (x86)\Inno Setup 6\ISCC.exe",
                   "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe"
