@@ -19,7 +19,7 @@ permissions:
 jobs:
   build:
     name: Build ${{ matrix.arch_display }} (${{ matrix.arch }})
-    runs-on: windows-latest
+    runs-on: windows-2022
 
     strategy:
       fail-fast: false
@@ -38,9 +38,18 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Configure CMake (Visual Studio 2022 - ${{ matrix.arch_display }})
+      - name: Configure CMake (${{ matrix.arch_display }})
+        shell: powershell
         run: |
-          cmake -B build -G "Visual Studio 17 2022" -A ${{ matrix.cmake_arch }} -DCMAKE_BUILD_TYPE=Release
+          cmake -B build -G "Visual Studio 17 2022" -A ${{ matrix.cmake_arch }}
+          if ($LASTEXITCODE -ne 0) {
+              Write-Host "Visual Studio 17 2022 generator not found; falling back to runner default Visual Studio generator..."
+              Remove-Item -Recurse -Force build -ErrorAction SilentlyContinue
+              cmake -B build -A ${{ matrix.cmake_arch }}
+              if ($LASTEXITCODE -ne 0) {
+                  exit $LASTEXITCODE
+              }
+          }
 
       - name: Build Halo Desktop (${{ matrix.arch }})
         run: |
