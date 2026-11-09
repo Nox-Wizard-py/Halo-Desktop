@@ -133,6 +133,18 @@ void MediaSessionWatcher::NextTrack()
 
 void MediaSessionWatcher::SeekTo(double normalizedFraction)
 {
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        if (m_currentTrack.duration100ns > 0)
+        {
+            m_currentTrack.position100ns = std::clamp<int64_t>(
+                static_cast<int64_t>(normalizedFraction * m_currentTrack.duration100ns),
+                0,
+                m_currentTrack.duration100ns
+            );
+            m_currentTrack.lastUpdatedTime = std::chrono::steady_clock::now();
+        }
+    }
     EnqueueCommand(CommandType::Seek, normalizedFraction);
 }
 
@@ -483,16 +495,29 @@ void MediaSessionWatcher::WorkerThreadFunc()
                         }
                         else if (cmd.type == CommandType::Seek)
                         {
+                            int64_t dur = 0;
                             auto timeline = activeSession.GetTimelineProperties();
                             if (timeline)
                             {
-                                int64_t dur = timeline.EndTime().count();
-                                if (dur > 0)
+                                dur = timeline.EndTime().count();
+                            }
+                            if (dur <= 0)
+                            {
+                                std::lock_guard<std::mutex> lock(m_mutex);
+                                dur = m_currentTrack.duration100ns;
+                            }
+                            if (dur > 0)
+                            {
+                                int64_t target = std::clamp<int64_t>(static_cast<int64_t>(cmd.seekFraction * dur), 0, dur);
+                                activeSession.TryChangePlaybackPositionAsync(target);
+                                lastAuthoritativePos100ns = target;
+                                lastTimelineSystemTimeRaw = 0; // Force acceptance of the next authoritative sample
                                 {
-                                    int64_t target = static_cast<int64_t>(cmd.seekFraction * dur);
-                                    activeSession.TryChangePlaybackPositionAsync(target);
-                                    LogMedia("[GSMTC] Dispatched Seek command to: " + std::to_string(target / 10000000.0) + "s");
+                                    std::lock_guard<std::mutex> lock(m_mutex);
+                                    m_currentTrack.position100ns = target;
+                                    m_currentTrack.lastUpdatedTime = std::chrono::steady_clock::now();
                                 }
+                                LogMedia("[GSMTC] Dispatched Seek command to: " + std::to_string(target / 10000000.0) + "s");
                             }
                         }
                     }
@@ -675,20 +700,31 @@ void MediaSessionWatcher::WorkerThreadFunc()
                         LogMedia("[GSMTC] Playback RESUMED from " + std::to_string(m_currentTrack.position100ns / 10000000.0) + "s");
                     }
                 }
+                else if (!isPlaying && hasNewSample && posChanged)
+                {
+                    // Media is paused and user seeked (either via UI or external player)
+                    std::lock_guard<std::mutex> lock(m_mutex);
+                    m_currentTrack.position100ns = authPos100ns;
+                    if (authDur100ns > 0) m_currentTrack.duration100ns = authDur100ns;
+                    m_currentTrack.lastUpdatedTime = std::chrono::steady_clock::now();
+                    lastAuthoritativePos100ns = authPos100ns;
+                    lastTimelineSystemTimeRaw = authTimeRaw;
+                    LogMedia("[GSMTC Rebase] PAUSED_SEEK | Target: " + std::to_string(authPos100ns / 10000000.0) + "s");
+                }
                 else if (isPlaying && hasNewSample)
                 {
                     // Media is playing and a new authoritative sample arrived from GSMTC
                     int64_t delta100ns = authPos100ns - currentLocalPos100ns;
 
                     // Seek Detection:
-                    // Genuine seek occurs when the authoritative position differs significantly (> 2.0s forward or backward)
+                    // Genuine seek occurs when the authoritative position differs significantly (> 1.0s forward or backward)
                     // AND the position actually changed from the previous authoritative sample.
-                    bool isForwardSeek = (posChanged && delta100ns > 20000000LL);   // > +2.0s
-                    bool isBackwardSeek = (posChanged && delta100ns < -20000000LL); // < -2.0s
+                    bool isForwardSeek = (posChanged && delta100ns > 10000000LL);   // > +1.0s
+                    bool isBackwardSeek = (posChanged && delta100ns < -10000000LL); // < -1.0s
 
                     // Periodic streaming sync (e.g. Spotify sending 1s updates):
-                    // If drift between local and remote exceeds 1.0s, gently re-anchor
-                    bool isDriftRebase = (posChanged && std::abs(delta100ns) > 10000000LL && std::abs(delta100ns) <= 20000000LL);
+                    // If drift between local and remote exceeds 0.5s, gently re-anchor
+                    bool isDriftRebase = (posChanged && std::abs(delta100ns) > 5000000LL && std::abs(delta100ns) <= 10000000LL);
 
                     if (isForwardSeek || isBackwardSeek || isDriftRebase)
                     {

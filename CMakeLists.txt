@@ -20,6 +20,7 @@ set(SOURCES
     src/render/BackdropSampler.cpp
     src/render/shaders/plasmaRim.hlsl
     src/render/shaders/liquidGlass.hlsl
+    src/render/shaders/glassmorphism.hlsl
     src/audio/BassFilter.hpp
     src/audio/BassFilter.cpp
     src/audio/BeatDetector.hpp
@@ -36,6 +37,11 @@ set(SOURCES
     src/ui/MediaCardRenderer.cpp
     src/ui/MediaCardWindow.hpp
     src/ui/MediaCardWindow.cpp
+    src/settings/LightingSettings.hpp
+    src/ui/LightingStudioWindow.hpp
+    src/ui/LightingStudioWindow.cpp
+    src/ui/AODWindow.hpp
+    src/ui/AODWindow.cpp
 )
 
 add_executable(LumnOverlay WIN32 ${SOURCES})
@@ -55,12 +61,15 @@ target_link_libraries(LumnOverlay PRIVATE
     user32
     gdi32
     shell32
+    advapi32
     avrt
     ole32
     windowsapp
     windowscodecs
     shlwapi
     dwmapi
+    comctl32
+    comdlg32
 )
 
 # Ensure plasmaRim.hlsl and liquidGlass.hlsl are copied alongside the built executable
@@ -71,6 +80,9 @@ add_custom_command(TARGET LumnOverlay POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "${CMAKE_CURRENT_SOURCE_DIR}/src/render/shaders/liquidGlass.hlsl"
         "$<TARGET_FILE_DIR:LumnOverlay>/liquidGlass.hlsl"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/render/shaders/glassmorphism.hlsl"
+        "$<TARGET_FILE_DIR:LumnOverlay>/glassmorphism.hlsl"
     COMMENT "Copying HLSL shaders to target output directory"
 )
 
@@ -80,9 +92,13 @@ enable_testing()
 add_executable(LumnVerification
     tests/test_verification.cpp
     src/ui/MediaCardRenderer.cpp
+    src/ui/MediaCardWindow.cpp
+    src/ui/LightingStudioWindow.cpp
+    src/ui/AODWindow.cpp
     src/render/BackdropSampler.cpp
     src/media/MediaSessionWatcher.cpp
     src/media/ColorExtractor.cpp
+    src/audio/MusicSyncClock.cpp
 )
 
 target_include_directories(LumnVerification PRIVATE
@@ -100,12 +116,15 @@ target_link_libraries(LumnVerification PRIVATE
     user32
     gdi32
     shell32
+    advapi32
     avrt
     ole32
     windowsapp
     windowscodecs
     shlwapi
     dwmapi
+    comctl32
+    comdlg32
 )
 
 add_test(NAME VerificationTest COMMAND LumnVerification)
@@ -114,6 +133,9 @@ add_custom_command(TARGET LumnVerification POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "${CMAKE_CURRENT_SOURCE_DIR}/src/render/shaders/liquidGlass.hlsl"
         "$<TARGET_FILE_DIR:LumnVerification>/liquidGlass.hlsl"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/render/shaders/glassmorphism.hlsl"
+        "$<TARGET_FILE_DIR:LumnVerification>/glassmorphism.hlsl"
     COMMENT "Copying liquidGlass.hlsl to verification output directory"
 )
 

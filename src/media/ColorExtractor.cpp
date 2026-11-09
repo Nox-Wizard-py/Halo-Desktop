@@ -72,17 +72,58 @@ float ColorExtractor::DeltaE(const OKLab& c1, const OKLab& c2) noexcept
     return std::sqrt(dL * dL + da * da + db * db);
 }
 
-struct PerceptualCluster
+ColorExtractor::HSB ColorExtractor::RGBtoHSB(float r, float g, float b) noexcept
 {
-    int hueSector = 0;
-    int lightnessTier = 0; // 0=Dark [0.08, 0.40), 1=Mid [0.40, 0.70), 2=Light [0.70, 0.94]
-    float weightSum = 0.0f;
-    float L_sum = 0.0f;
-    float a_sum = 0.0f;
-    float b_sum = 0.0f;
-    float rgb_sum[3] = { 0.0f, 0.0f, 0.0f };
-    uint32_t count = 0;
-};
+    float maxV = std::max({ r, g, b });
+    float minV = std::min({ r, g, b });
+    float delta = maxV - minV;
+
+    float h = 0.0f;
+    float s = (maxV > 1e-5f) ? (delta / maxV) : 0.0f;
+    float v = maxV;
+
+    if (delta > 1e-5f)
+    {
+        if (maxV == r)
+        {
+            h = (g - b) / delta;
+        }
+        else if (maxV == g)
+        {
+            h = 2.0f + (b - r) / delta;
+        }
+        else
+        {
+            h = 4.0f + (r - g) / delta;
+        }
+        h /= 6.0f;
+        if (h < 0.0f) h += 1.0f;
+    }
+    return { h, s, v };
+}
+
+ColorExtractor::RGB ColorExtractor::HSBtoRGB(float h, float s, float v) noexcept
+{
+    if (s <= 1e-5f) return { v, v, v };
+
+    float sector = std::fmod(h * 6.0f, 6.0f);
+    if (sector < 0.0f) sector += 6.0f;
+    int i = static_cast<int>(sector);
+    float f = sector - static_cast<float>(i);
+    float p = v * (1.0f - s);
+    float q = v * (1.0f - s * f);
+    float t = v * (1.0f - s * (1.0f - f));
+
+    switch (i)
+    {
+    case 0: return { v, t, p };
+    case 1: return { q, v, p };
+    case 2: return { p, v, t };
+    case 3: return { p, q, v };
+    case 4: return { t, p, v };
+    default: return { v, p, q };
+    }
+}
 
 RimPalette ColorExtractor::ExtractFromRGBA48x48(const uint8_t* rgbaPixels)
 {
@@ -94,251 +135,228 @@ RimPalette ColorExtractor::ExtractFromRGBA48x48(const uint8_t* rgbaPixels)
 
     constexpr uint32_t W = DOWNSAMPLE_WIDTH;
     constexpr uint32_t H = DOWNSAMPLE_HEIGHT;
+    constexpr uint32_t TOTAL_PIXELS = W * H;
 
-    // 16 hue sectors * 3 lightness tiers = 48 color bins + 1 neutral/monochrome bin
-    PerceptualCluster bins[49];
-    for (int i = 0; i < 49; ++i)
+    struct HueBin
     {
-        bins[i].hueSector = i % 16;
-        bins[i].lightnessTier = (i < 48) ? (i / 16) : 3;
-    }
-
-    uint32_t totalOpaque = 0;
-    uint32_t colorfulPixels = 0;
-    float totalChroma = 0.0f;
-    float neutralLSum = 0.0f;
-    uint32_t neutralCount = 0;
-
-    for (uint32_t y = 0; y < H; ++y)
-    {
-        for (uint32_t x = 0; x < W; ++x)
-        {
-            size_t idx = (y * W + x) * 4;
-            uint8_t aByte = rgbaPixels[idx + 3];
-            if (aByte < 128)
-            {
-                continue; // Alpha gate
-            }
-            totalOpaque++;
-
-            float r = rgbaPixels[idx + 0] / 255.0f;
-            float g = rgbaPixels[idx + 1] / 255.0f;
-            float b = rgbaPixels[idx + 2] / 255.0f;
-
-            OKLab lab = RGBtoOKLab(r, g, b);
-            float chroma = std::sqrt(lab.a * lab.a + lab.b * lab.b);
-
-            // Border dampening: down-weight outer 2 pixels by 0.35x to avoid letterboxing/frame bias
-            float borderWeight = 1.0f;
-            if (x < 2 || x >= W - 2 || y < 2 || y >= H - 2)
-            {
-                borderWeight = 0.35f;
-            }
-
-            // Extreme highlight (> 0.94) or near-black (< 0.06) down-weighting
-            if (lab.L > 0.94f || lab.L < 0.06f)
-            {
-                borderWeight *= 0.15f;
-            }
-
-            totalChroma += chroma;
-
-            // Neutral / Desaturated bin (Chroma < 0.035)
-            if (chroma < 0.035f)
-            {
-                neutralCount++;
-                neutralLSum += lab.L;
-                bins[48].weightSum += 0.5f * borderWeight;
-                bins[48].L_sum += lab.L * borderWeight;
-                bins[48].a_sum += lab.a * borderWeight;
-                bins[48].b_sum += lab.b * borderWeight;
-                bins[48].rgb_sum[0] += r * borderWeight;
-                bins[48].rgb_sum[1] += g * borderWeight;
-                bins[48].rgb_sum[2] += b * borderWeight;
-                bins[48].count++;
-                continue;
-            }
-
-            colorfulPixels++;
-
-            // Perceptual saliency weight:
-            // Peaks at midtones sin(pi * L) and scales non-linearly with chroma C^1.2
-            float midWeight = std::sin(3.14159265f * std::clamp(lab.L, 0.0f, 1.0f));
-            float weight = std::pow(chroma, 1.2f) * midWeight * borderWeight;
-
-            // Quantize hue angle in [0, 2pi) into 16 sectors (22.5 deg each)
-            float hue = std::atan2(lab.b, lab.a);
-            if (hue < 0.0f) hue += 6.2831853f;
-            int hueSector = std::clamp(static_cast<int>(hue / (6.2831853f / 16.0f)), 0, 15);
-
-            // Lightness tier: 0=Dark [0.08, 0.40), 1=Mid [0.40, 0.70), 2=Light [0.70, 0.94]
-            int tier = 1;
-            if (lab.L < 0.40f) tier = 0;
-            else if (lab.L >= 0.70f) tier = 2;
-
-            int binIdx = tier * 16 + hueSector;
-            bins[binIdx].weightSum += weight;
-            bins[binIdx].L_sum += lab.L * weight;
-            bins[binIdx].a_sum += lab.a * weight;
-            bins[binIdx].b_sum += lab.b * weight;
-            bins[binIdx].rgb_sum[0] += r * weight;
-            bins[binIdx].rgb_sum[1] += g * weight;
-            bins[binIdx].rgb_sum[2] += b * weight;
-            bins[binIdx].count++;
-        }
-    }
-
-    if (totalOpaque == 0)
-    {
-        return result;
-    }
-
-    float avgChroma = totalChroma / static_cast<float>(totalOpaque);
-
-    // 1. Monochrome / Low-saturation path (avgChroma < 0.032 or < 40 colorful pixels)
-    if (avgChroma < 0.032f || colorfulPixels < 40)
-    {
-        float meanL = (neutralCount > 0) ? (neutralLSum / static_cast<float>(neutralCount)) : 0.5f;
-
-        // Elegant platinum highlight with cool slate tone
-        result.hot[0] = std::clamp(meanL + 0.35f, 0.75f, 0.95f);
-        result.hot[1] = std::clamp(meanL + 0.37f, 0.78f, 0.97f);
-        result.hot[2] = std::clamp(meanL + 0.42f, 0.82f, 1.00f);
-        result.hot[3] = 1.0f;
-
-        // Deep obsidian foundation
-        result.deep[0] = std::clamp(meanL - 0.30f, 0.08f, 0.22f);
-        result.deep[1] = std::clamp(meanL - 0.28f, 0.10f, 0.25f);
-        result.deep[2] = std::clamp(meanL - 0.24f, 0.14f, 0.30f);
-        result.deep[3] = 1.0f;
-
-        result.balance = 0.50f;
-        result.hasArtwork = true;
-        return result;
-    }
-
-    // Collect qualifying chromatic candidate clusters
-    struct Candidate
-    {
-        OKLab lab{};
-        RGB rgb{};
-        float weight = 0.0f;
-        uint32_t count = 0;
-        int tier = 0;
+        float weightSum = 0.0f;
+        float rgbSum[3] = { 0.0f, 0.0f, 0.0f };
+        int pixelCount = 0;
     };
 
-    std::vector<Candidate> candidates;
-    for (int i = 0; i < 48; ++i)
+    HueBin bins[12] = {};
+    float neutralRgbSum[3] = { 0.0f, 0.0f, 0.0f };
+    int neutralCount = 0;
+    int totalOpaqueCount = 0;
+
+    for (uint32_t i = 0; i < TOTAL_PIXELS * 4; i += 4)
     {
-        if (bins[i].weightSum > 0.005f && bins[i].count >= 6)
+        float a = rgbaPixels[i + 3] / 255.0f;
+        if (a < 0.5f)
         {
-            float invW = 1.0f / bins[i].weightSum;
-            Candidate c;
-            c.lab = { bins[i].L_sum * invW, bins[i].a_sum * invW, bins[i].b_sum * invW };
-            c.rgb = { bins[i].rgb_sum[0] * invW, bins[i].rgb_sum[1] * invW, bins[i].rgb_sum[2] * invW };
-            c.weight = bins[i].weightSum;
-            c.count = bins[i].count;
-            c.tier = bins[i].lightnessTier;
-            candidates.push_back(c);
+            continue; // Alpha gate (>= 50% opaque)
+        }
+        totalOpaqueCount++;
+
+        float r = rgbaPixels[i + 0] / 255.0f;
+        float g = rgbaPixels[i + 1] / 255.0f;
+        float b = rgbaPixels[i + 2] / 255.0f;
+
+        HSB hsb = RGBtoHSB(r, g, b);
+
+        // Vibrancy gate: Saturation >= 0.25 and Brightness >= 0.15
+        if (hsb.s >= 0.25f && hsb.b >= 0.15f)
+        {
+            int binIndex = std::clamp(static_cast<int>(hsb.h * 12.0f), 0, 11);
+            float weight = hsb.b * (hsb.s * hsb.s); // Brightness * Saturation^2
+
+            bins[binIndex].weightSum += weight;
+            bins[binIndex].rgbSum[0] += r * weight;
+            bins[binIndex].rgbSum[1] += g * weight;
+            bins[binIndex].rgbSum[2] += b * weight;
+            bins[binIndex].pixelCount++;
+        }
+        else
+        {
+            neutralRgbSum[0] += r;
+            neutralRgbSum[1] += g;
+            neutralRgbSum[2] += b;
+            neutralCount++;
         }
     }
 
-    if (candidates.empty())
+    if (totalOpaqueCount == 0)
+    {
+        return result;
+    }
+
+    int coloredCount = totalOpaqueCount - neutralCount;
+
+    // Grayscale / low-saturation branch: < 18% colorful pixels
+    if (static_cast<float>(coloredCount) / static_cast<float>(totalOpaqueCount) < 0.18f || coloredCount == 0)
+    {
+        float avgR = (neutralCount > 0) ? (neutralRgbSum[0] / neutralCount) : 0.80f;
+        float avgG = (neutralCount > 0) ? (neutralRgbSum[1] / neutralCount) : 0.80f;
+        float avgB = (neutralCount > 0) ? (neutralRgbSum[2] / neutralCount) : 0.80f;
+
+        HSB hsb = RGBtoHSB(avgR, avgG, avgB);
+        hsb.s = std::min(hsb.s, 0.06f);
+
+        if (hsb.b < 0.30f)
+        {
+            hsb.b = std::max(hsb.b, 0.12f);
+            RGB hot = HSBtoRGB(hsb.h, hsb.s, hsb.b);
+            RGB deep = HSBtoRGB(hsb.h, hsb.s, std::min(hsb.b + 0.10f, 0.30f));
+
+            result.hot[0] = hot.r; result.hot[1] = hot.g; result.hot[2] = hot.b; result.hot[3] = 1.0f;
+            result.deep[0] = deep.r; result.deep[1] = deep.g; result.deep[2] = deep.b; result.deep[3] = 1.0f;
+            result.color2[0] = (hot.r + deep.r) * 0.5f; result.color2[1] = (hot.g + deep.g) * 0.5f; result.color2[2] = (hot.b + deep.b) * 0.5f; result.color2[3] = 1.0f;
+            result.color3[0] = std::min(hot.r + 0.15f, 1.0f); result.color3[1] = std::min(hot.g + 0.15f, 1.0f); result.color3[2] = std::min(hot.b + 0.15f, 1.0f); result.color3[3] = 1.0f;
+            result.balance = 0.50f;
+            result.hasArtwork = true;
+            return result;
+        }
+        else
+        {
+            hsb.b = std::min(hsb.b, 0.55f);
+            RGB hot = HSBtoRGB(hsb.h, hsb.s, hsb.b);
+            HSB deepHsb = RGBtoHSB(hot.r, hot.g, hot.b);
+            deepHsb.b = (deepHsb.b >= 0.50f) ? std::max(deepHsb.b - 0.16f, 0.30f) : std::min(deepHsb.b + 0.16f, 0.95f);
+            deepHsb.s = (deepHsb.s > 0.20f) ? std::max(deepHsb.s, 0.60f) : deepHsb.s;
+            RGB deep = HSBtoRGB(deepHsb.h, deepHsb.s, deepHsb.b);
+
+            result.hot[0] = hot.r; result.hot[1] = hot.g; result.hot[2] = hot.b; result.hot[3] = 1.0f;
+            result.deep[0] = deep.r; result.deep[1] = deep.g; result.deep[2] = deep.b; result.deep[3] = 1.0f;
+            result.color2[0] = (hot.r + deep.r) * 0.5f; result.color2[1] = (hot.g + deep.g) * 0.5f; result.color2[2] = (hot.b + deep.b) * 0.5f; result.color2[3] = 1.0f;
+            result.color3[0] = std::min(hot.r + 0.15f, 1.0f); result.color3[1] = std::min(hot.g + 0.15f, 1.0f); result.color3[2] = std::min(hot.b + 0.15f, 1.0f); result.color3[3] = 1.0f;
+            result.balance = 0.50f;
+            result.hasArtwork = true;
+            return result;
+        }
+    }
+
+    struct QualifiedBin
+    {
+        int index = 0;
+        RGB color{};
+        int count = 0;
+    };
+
+    std::vector<QualifiedBin> qualified;
+    for (int i = 0; i < 12; ++i)
+    {
+        if (bins[i].weightSum > 0.05f && bins[i].pixelCount >= 1)
+        {
+            float invW = 1.0f / bins[i].weightSum;
+            QualifiedBin qb;
+            qb.index = i;
+            qb.color = { bins[i].rgbSum[0] * invW, bins[i].rgbSum[1] * invW, bins[i].rgbSum[2] * invW };
+            qb.count = bins[i].pixelCount;
+            qualified.push_back(qb);
+        }
+    }
+
+    if (qualified.empty())
     {
         result.hasArtwork = true;
         return result;
     }
 
-    // Sort descending by accumulated saliency weight
-    std::sort(candidates.begin(), candidates.end(), [](const Candidate& a, const Candidate& b) {
-        return a.weight > b.weight;
+    // Sort qualified bins descending by pixel count
+    std::sort(qualified.begin(), qualified.end(), [](const QualifiedBin& a, const QualifiedBin& b) {
+        return a.count > b.count;
     });
 
-    // 2. Select HotColor: Luminous, vivid accent (optimal L ~ 0.65, high chroma)
-    int bestHotIdx = 0;
-    float bestHotScore = -1e9f;
-    for (size_t i = 0; i < candidates.size(); ++i)
-    {
-        const auto& c = candidates[i];
-        float chroma = std::sqrt(c.lab.a * c.lab.a + c.lab.b * c.lab.b);
-        // Reward high chroma, penalize deviation from ideal highlight lightness (0.65)
-        float score = c.weight * (chroma + 0.05f) * (1.0f - 1.6f * std::abs(c.lab.L - 0.65f));
-        if (score > bestHotScore)
-        {
-            bestHotScore = score;
-            bestHotIdx = static_cast<int>(i);
-        }
-    }
+    // 1. Dominant / HotColor (Primary Vibrant Accent)
+    const auto& dominant = qualified[0];
+    HSB hotHsb = RGBtoHSB(dominant.color.r, dominant.color.g, dominant.color.b);
+    hotHsb.s = std::max(hotHsb.s, 0.60f); // Saturation >= 0.60
+    hotHsb.b = std::max(hotHsb.b, 0.72f); // Brightness >= 0.72
+    RGB hot = HSBtoRGB(hotHsb.h, hotHsb.s, hotHsb.b);
 
-    Candidate hotCand = candidates[bestHotIdx];
-    OKLab hotLab = hotCand.lab;
-    // Guarantee hot accent is adequately luminous for the plasma rim
-    if (hotLab.L < 0.55f)
-    {
-        hotLab.L = 0.58f;
-    }
-    RGB hotRGB = OKLabtoRGB(hotLab.L, hotLab.a, hotLab.b);
-
-    result.hot[0] = hotRGB.r;
-    result.hot[1] = hotRGB.g;
-    result.hot[2] = hotRGB.b;
+    result.hot[0] = hot.r;
+    result.hot[1] = hot.g;
+    result.hot[2] = hot.b;
     result.hot[3] = 1.0f;
 
-    // 3. Select DeepColor: Rich dark foundation, L in [0.18, 0.35], DeltaE >= 0.18 from HotColor
-    int bestDeepIdx = -1;
-    float bestDeepScore = -1e9f;
-    for (size_t i = 0; i < candidates.size(); ++i)
-    {
-        if (static_cast<int>(i) == bestHotIdx) continue;
-        const auto& c = candidates[i];
-        float dE = DeltaE(hotLab, c.lab);
-        if (dE < 0.18f) continue; // Prevent choosing two colors that are too similar
+    // 2. Multi-Color Palette Extraction: Find distinct Secondary (Color2) and Tertiary (Color3) candidate bins
+    const QualifiedBin* secBin = nullptr;
+    const QualifiedBin* tertBin = nullptr;
 
-        float chroma = std::sqrt(c.lab.a * c.lab.a + c.lab.b * c.lab.b);
-        // Reward darker candidates with distinct separation and good chroma
-        float score = c.weight * (1.0f + dE * 1.5f) * (chroma + 0.04f) * (1.0f - 2.0f * std::abs(c.lab.L - 0.25f));
-        if (score > bestDeepScore)
+    for (size_t i = 1; i < qualified.size(); ++i)
+    {
+        const auto& cand = qualified[i];
+        int diff = std::abs(cand.index - dominant.index);
+        int circularDist = std::min(diff, 12 - diff);
+        if (circularDist > 1 && !secBin) // At least 2 sectors (>= 60 deg apart)
         {
-            bestDeepScore = score;
-            bestDeepIdx = static_cast<int>(i);
+            secBin = &cand;
+        }
+        else if (secBin && !tertBin)
+        {
+            int diffSec = std::abs(cand.index - secBin->index);
+            int distSec = std::min(diffSec, 12 - diffSec);
+            if (circularDist >= 1 && distSec >= 1)
+            {
+                tertBin = &cand;
+            }
         }
     }
 
-    RGB deepRGB;
-    float deepWeight = 0.0f;
-    if (bestDeepIdx >= 0)
+    // Color 2 (Secondary Accent)
+    RGB c2;
+    if (secBin)
     {
-        // Distinct companion cluster found
-        OKLab deepLab = candidates[bestDeepIdx].lab;
-        deepWeight = candidates[bestDeepIdx].weight;
-        // Restrict foundation lightness strictly to [0.18, 0.35]
-        deepLab.L = std::clamp(deepLab.L, 0.18f, 0.35f);
-        deepRGB = OKLabtoRGB(deepLab.L, deepLab.a, deepLab.b);
+        HSB hsb2 = RGBtoHSB(secBin->color.r, secBin->color.g, secBin->color.b);
+        hsb2.s = std::max(hsb2.s, 0.60f);
+        hsb2.b = std::max(hsb2.b, 0.70f);
+        c2 = HSBtoRGB(hsb2.h, hsb2.s, hsb2.b);
+
+        float totalPop = static_cast<float>(dominant.count + secBin->count);
+        result.balance = std::clamp(static_cast<float>(dominant.count) / totalPop, 0.15f, 0.85f);
     }
     else
     {
-        // Monochromatic / Single-Hue artwork:
-        // Harmonically derive rich midnight shade sharing HotColor's hue angle
-        float hotChroma = std::sqrt(hotLab.a * hotLab.a + hotLab.b * hotLab.b);
-        float deepL = 0.22f; // Midnight foundation
-        float deepChroma = (hotChroma > 0.001f) ? std::min(hotChroma * 0.85f, 0.13f) : 0.0f;
-        float deepA = (hotChroma > 0.001f) ? (hotLab.a * (deepChroma / hotChroma)) : 0.0f;
-        float deepB = (hotChroma > 0.001f) ? (hotLab.b * (deepChroma / hotChroma)) : 0.0f;
-        deepRGB = OKLabtoRGB(deepL, deepA, deepB);
-        deepWeight = hotCand.weight * 0.5f;
+        // Harmonic analogous shift (+30 deg)
+        float h2 = std::fmod(hotHsb.h + (1.0f / 12.0f), 1.0f);
+        c2 = HSBtoRGB(h2, std::max(hotHsb.s, 0.60f), std::max(hotHsb.b - 0.10f, 0.60f));
+        result.balance = 0.50f;
     }
+    result.color2[0] = c2.r; result.color2[1] = c2.g; result.color2[2] = c2.b; result.color2[3] = 1.0f;
 
-    result.deep[0] = deepRGB.r;
-    result.deep[1] = deepRGB.g;
-    result.deep[2] = deepRGB.b;
+    // Color 3 (Tertiary Accent / Luminous Highlight)
+    RGB c3;
+    if (tertBin)
+    {
+        HSB hsb3 = RGBtoHSB(tertBin->color.r, tertBin->color.g, tertBin->color.b);
+        hsb3.s = std::max(hsb3.s, 0.55f);
+        hsb3.b = std::max(hsb3.b, 0.75f);
+        c3 = HSBtoRGB(hsb3.h, hsb3.s, hsb3.b);
+    }
+    else
+    {
+        // Harmonic complementary shift (-30 deg)
+        float h3 = std::fmod(hotHsb.h - (1.0f / 12.0f) + 1.0f, 1.0f);
+        c3 = HSBtoRGB(h3, std::max(hotHsb.s * 0.85f, 0.50f), std::min(hotHsb.b + 0.15f, 0.95f));
+    }
+    result.color3[0] = c3.r; result.color3[1] = c3.g; result.color3[2] = c3.b; result.color3[3] = 1.0f;
+
+    // Color 4 / DeepColor (Grounded Foundation Tone)
+    HSB deepHsb = RGBtoHSB(hot.r, hot.g, hot.b);
+    if (secBin)
+    {
+        deepHsb = RGBtoHSB(c2.r, c2.g, c2.b);
+    }
+    deepHsb.b = (deepHsb.b >= 0.50f) ? std::max(deepHsb.b - 0.25f, 0.25f) : std::min(deepHsb.b + 0.16f, 0.95f);
+    if (deepHsb.s > 0.20f)
+    {
+        deepHsb.s = std::max(deepHsb.s, 0.65f);
+    }
+    RGB deep = HSBtoRGB(deepHsb.h, deepHsb.s, deepHsb.b);
+    result.deep[0] = deep.r;
+    result.deep[1] = deep.g;
+    result.deep[2] = deep.b;
     result.deep[3] = 1.0f;
-
-    // 4. Dynamic Balance ratio in [0.35, 0.65]
-    result.balance = std::clamp(
-        0.40f + 0.20f * (hotCand.weight / (hotCand.weight + deepWeight + 1e-4f)),
-        0.35f,
-        0.65f
-    );
     result.hasArtwork = true;
 
     return result;

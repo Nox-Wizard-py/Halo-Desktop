@@ -1,22 +1,27 @@
-// plasmaRim.hlsl - Windows 11 Native Rim Lighting Pixel Shader
-// Reconstructed from Lumn 1.1 Metal AIR Bitcode (scratch/plasmaRim.ll)
+// plasmaRim.hlsl - Windows 11 Native Multi-Harmonic Screen-Edge Plasma Rim
+// Ported from Apple Metal MSL / AIR 2.7 bytecode (extracted/Lumn.app/Contents/Resources/default.metallib)
+// Faithful reproduction with partial-perimeter revolving wave, multi-color gradient & soft white core
 
 cbuffer RimConstants : register(b0)
 {
     float2 ScreenSize;      // Physical screen dimensions in pixels (e.g. 2560, 1440)
     float2 NotchDimensions; // Hardcoded to (0, 0) on Windows displays
-    float4 HotColor;        // High-energy rim color (RGBA float, e.g. cyan/magenta)
-    float4 DeepColor;       // Low-energy bass rim color (RGBA float, e.g. indigo/purple)
-    float  Time;            // Elapsed continuous animation time in seconds
-    float  Phase;           // Beat-synchronized phase [0.0, 1.0] (defaults to idle progress)
-    float  Balance;         // Chromatic balance ratio [0.0, 1.0]
+    float4 HotColor;        // Color 1: Primary vibrant accent (e.g. cyan/gold/magenta)
+    float4 DeepColor;       // Color 4: Deep foundation base (e.g. violet/indigo)
+    float4 Color2;          // Color 2: Secondary contrasting accent
+    float4 Color3;          // Color 3: Tertiary luminous highlight
+    float  Time;            // Elapsed continuous animation time in seconds (frozen when paused)
+    float  Phase;           // Continuous revolving phase argument [0.0, inf) (frozen when paused)
+    float  Balance;         // Chromatic balance ratio [0.15, 0.85]
     float  Bloom;           // Transient bloom impulse [0.0, 1.0]
     float  CornerRadius;    // Default 0.0 for rectangular PC monitors, configurable up to 24.0
     float  ThicknessMul;    // Rim thickness multiplier (default 1.0)
     float  GlowMultiplier;  // Overall glow intensity multiplier (default 1.0)
     float  AudioLevel;      // Continuous dynamic normalized audio energy [0.0, 1.0]
     float  BeatPulse;       // Instantaneous beat transient impulse [0.0, 1.0]
-    float3 Padding;         // 16-byte alignment padding (total 96 bytes)
+    float  RevealProgress;  // Organic activation reveal progress [0.0, 1.0] (1.0 = normal plasma)
+    float  RevealCorner;    // Origin corner: 0=Top-Left, 1=Top-Right, 2=Bottom-Right, 3=Bottom-Left
+    float  RevealPadding;   // Alignment padding (total 128 bytes)
 };
 
 struct VS_OUTPUT
@@ -34,152 +39,188 @@ VS_OUTPUT VSMain(uint vertexId : SV_VertexID)
     return output;
 }
 
-// 2D Hash Function (matching procedural noise in Metal shader)
-float hash2d(float2 p)
-{
-    p = frac(p * float2(123.34f, 456.21f));
-    p += dot(p, p + 45.32f);
-    return frac(p.x * p.y);
-}
-
-// 2D Value Noise with Hermite Interpolation
-float valueNoise(float2 p)
-{
-    float2 i = floor(p);
-    float2 f = frac(p);
-    float2 u = f * f * (3.0f - 2.0f * f);
-
-    float a = hash2d(i + float2(0.0f, 0.0f));
-    float b = hash2d(i + float2(1.0f, 0.0f));
-    float c = hash2d(i + float2(0.0f, 1.0f));
-    float d = hash2d(i + float2(1.0f, 1.0f));
-
-    return lerp(lerp(a, b, u.x), lerp(c, d, u.x), u.y);
-}
-
-// 4-Octave Fractional Brownian Motion (FBM)
-float fbm(float2 p)
-{
-    float v = 0.0f;
-    float a = 0.5f;
-    float2 shift = float2(100.0f, 100.0f);
-    float2x2 rot = float2x2(cos(0.5f), sin(0.5f), -sin(0.5f), cos(0.5f));
-    [unroll]
-    for (int i = 0; i < 4; ++i)
-    {
-        v += a * valueNoise(p);
-        p = mul(rot, p) * 2.0f + shift;
-        a *= 0.5f;
-    }
-    return v;
-}
-
-// Signed Distance Field (SDF) for a 2D rounded rectangle
-float sdRoundedBox(float2 p, float2 b, float r)
-{
-    float2 q = abs(p) - b + r;
-    return min(max(q.x, q.y), 0.0f) + length(max(q, 0.0f)) - r;
-}
-
 float4 PSMain(VS_OUTPUT input) : SV_Target
 {
     float2 pixelPos = input.Position.xy;
     float2 halfSize = ScreenSize * 0.5f;
     float2 p = pixelPos - halfSize;
 
-    // 1. Signed Distance to Screen Boundary
-    // Windows displays do not have a camera notch: NotchDimensions is (0, 0)
+    // 1. Signed Distance to Screen Boundary (inward distance > 0)
     float effectiveRadius = max(0.0f, CornerRadius);
-    float dist = sdRoundedBox(p, halfSize, effectiveRadius);
-    float edgeDist = abs(dist);
+    float2 q = abs(p) - halfSize + effectiveRadius;
+    float edgeDist = -(length(max(q, 0.0f)) + min(max(q.x, q.y), 0.0f) - effectiveRadius);
 
-    // 2. Base Rim Geometry Bounds & Dynamic Breathing
-    float baseThickness = 4.0f * max(0.2f, ThicknessMul);
+    // Camera notch adaptation (MacBook only; skipped when NotchDimensions.x <= 0)
+    if (NotchDimensions.x > 0.0f)
+    {
+        float2 notchCenter = float2(0.0f, (NotchDimensions.y - ScreenSize.y) * 0.5f);
+        float2 pNotch = p - notchCenter;
+        float2 notchHalf = NotchDimensions * 0.5f;
+        float2 qNotch = abs(pNotch) - notchHalf + 8.0f;
+        float dNotch = length(max(qNotch, 0.0f)) + min(max(qNotch.x, qNotch.y), 0.0f) - 8.0f;
+        edgeDist = min(edgeDist, max(dNotch, 0.0f));
+    }
 
-    // Continuous organic audio breathing: expands and contracts glow with audio energy
-    float continuousBreathe = AudioLevel * (2.2f + 1.2f * sin(Time * 2.8f + Phase * 6.2831853f));
+    // 2. Continuous Rectangle Perimeter Coordinate (uPerim in [0.0, 1.0) clockwise from Top-Left)
+    float perim = max(2.0f * (ScreenSize.x + ScreenSize.y), 1.0f);
+    float perimDist = 0.0f;
+    float2 dEdge = float2(pixelPos.x, ScreenSize.x - pixelPos.x); // dist to Left, Right
+    float2 dVert = float2(pixelPos.y, ScreenSize.y - pixelPos.y); // dist to Top, Bottom
 
-    // Discrete beat impact: sharp kick expansion that snaps with the rhythm
-    float beatImpact = BeatPulse * 3.5f + Bloom * 8.0f;
+    // Perimeter distance clockwise from Top-Left corner:
+    if (dVert.x <= dEdge.x && dVert.x <= dEdge.y && dVert.x <= dVert.y)
+    {
+        perimDist = pixelPos.x; // Top edge: x in [0, W]
+    }
+    else if (dEdge.y <= dEdge.x && dEdge.y <= dVert.x && dEdge.y <= dVert.y)
+    {
+        perimDist = ScreenSize.x + pixelPos.y; // Right edge: y in [0, H]
+    }
+    else if (dVert.y <= dEdge.x && dVert.y <= dEdge.y && dVert.y <= dVert.x)
+    {
+        perimDist = ScreenSize.x + ScreenSize.y + (ScreenSize.x - pixelPos.x); // Bottom edge: x in [W, 0]
+    }
+    else
+    {
+        perimDist = 2.0f * ScreenSize.x + ScreenSize.y + (ScreenSize.y - pixelPos.y); // Left edge: y in [H, 0]
+    }
 
-    // Maximum reach for early fragment discard
-    float maxReach = baseThickness * (1.0f + AudioLevel * 0.4f) + continuousBreathe + beatImpact + 14.0f;
-    if (edgeDist > maxReach)
+    float uPerim = perimDist / perim;
+
+    // 3. Screen-Space Corner Anchoring
+    float uCorner = 0.0f;
+    if (RevealCorner < 0.5f)
+    {
+        uCorner = 0.0f; // Corner 0: Top-Left (0, 0)
+    }
+    else if (RevealCorner < 1.5f)
+    {
+        uCorner = ScreenSize.x / perim; // Corner 1: Top-Right (W, 0)
+    }
+    else if (RevealCorner < 2.5f)
+    {
+        uCorner = 0.5f; // Corner 2: Bottom-Right (W, H)
+    }
+    else
+    {
+        uCorner = (2.0f * ScreenSize.x + ScreenSize.y) / perim; // Corner 3: Bottom-Left (0, H)
+    }
+
+    // 4. Plasma Segment Spatial Placement & Anchor
+    // The plasma wave crest is anchored to the selected corner, advancing smoothly with Phase
+    float waveCenter = frac(uCorner + Phase);
+    float cyclicDiff = uPerim - waveCenter;
+    cyclicDiff = cyclicDiff - round(cyclicDiff); // Wrapped to [-0.5, +0.5]
+    float segDist = abs(cyclicDiff);
+
+    // 5. Partial-Perimeter Segment Envelope (~50% active perimeter coverage)
+    // Active half-span = 0.26 (covers ~52% of total monitor perimeter, centered at the corner)
+    const float activeHalfSpan = 0.26f;
+    float segmentEnv = smoothstep(activeHalfSpan, 0.04f, segDist);
+    const float ambientFloor = 0.03f; // subtle baseline aura so inactive side is not completely dead
+    float waveEnv = ambientFloor + (1.0f - ambientFloor) * segmentEnv;
+
+    // 6. Multi-Harmonic Wave Along Perimeter (Recovered LUMN 3-harmonic equation)
+    float t = Phase + uPerim;
+    float wave = 0.50f * sin(t * 18.849556f - Time * 1.4f)
+               + 0.35f * sin(t * 37.699112f + Time * 0.9f)
+               + 0.25f * sin(t * 56.548668f + Time * 2.1f);
+
+    // 7. Organic Plasma Activation Reveal Mask
+    // Distance from pixel to origin corner along both adjoining edges
+    float dU_corner = abs(frac(uPerim - uCorner + 0.5f) - 0.5f);
+    float revealMask = 1.0f;
+    float meniscusGlow = 0.0f;
+
+    if (RevealProgress < 1.0f)
+    {
+        const float feather = 0.04f;
+        float fluidRipple = (0.015f * sin(uPerim * 37.699112f - Time * 2.5f)
+                           + 0.008f * cos(uPerim * 62.831853f + Time * 3.8f))
+                          * saturate(1.0f - (dU_corner / activeHalfSpan));
+        float frontEdge = 0.02f + RevealProgress * (activeHalfSpan + feather - 0.02f);
+        float dFront = (frontEdge - dU_corner) + fluidRipple;
+        revealMask = smoothstep(-feather, feather, dFront);
+
+        // Leading edge liquid light meniscus glow
+        float frontDist = abs(dFront);
+        meniscusGlow = exp(-frontDist * frontDist / 0.0020f) * saturate(1.0f - RevealProgress * 1.15f);
+    }
+
+    // Coupled effective wave envelope during entrance animation
+    float effectiveWaveEnv = (RevealProgress < 1.0f)
+        ? (ambientFloor + (1.0f - ambientFloor) * segmentEnv * revealMask)
+        : waveEnv;
+
+    // 8. Dynamic Rim Reach / Thickness Calculation (Expanded atmospheric edge reach)
+    float effectiveBloom = saturate(Bloom + BeatPulse * 0.40f);
+    float baseReach = (14.0f + wave * 9.0f) * effectiveWaveEnv * max(0.1f, ThicknessMul);
+    float reach = max(baseReach + effectiveBloom * 12.0f, 3.0f * effectiveWaveEnv);
+
+    // Early discard: pixels deeper than reach + falloff margin
+    if (edgeDist > reach + 3.5f)
     {
         discard;
     }
 
-    // 3. Perimeter Coordinate Projection t in [0, Perimeter]
-    // Unwraps rectangular perimeter into a continuous 1D domain
-    float perimeter = (ScreenSize.x + ScreenSize.y) * 2.0f;
-    float dTop = pixelPos.y;
-    float dBottom = ScreenSize.y - pixelPos.y;
-    float dLeft = pixelPos.x;
-    float dRight = ScreenSize.x - pixelPos.x;
-    float minD = min(min(dTop, dBottom), min(dLeft, dRight));
+    // 9. Artwork Multi-Color Palette Blend Across Active Perimeter
+    // Parameterize active illuminated span from trailing tail to leading head [0.0, 1.0]
+    float s = saturate((cyclicDiff + activeHalfSpan) / (2.0f * activeHalfSpan));
 
-    float t = 0.0f;
-    if (minD == dTop)
+    float3 artworkCol;
+    if (s < 0.333f)
     {
-        t = pixelPos.x; // Top edge (left to right)
+        float tSub = smoothstep(0.0f, 0.333f, s);
+        artworkCol = lerp(DeepColor.rgb, Color2.rgb, tSub);
     }
-    else if (minD == dRight)
+    else if (s < 0.666f)
     {
-        t = ScreenSize.x + pixelPos.y; // Right edge (top to bottom)
-    }
-    else if (minD == dBottom)
-    {
-        t = ScreenSize.x + ScreenSize.y + (ScreenSize.x - pixelPos.x); // Bottom edge (right to left)
+        float tSub = smoothstep(0.333f, 0.666f, s);
+        artworkCol = lerp(Color2.rgb, HotColor.rgb, tSub);
     }
     else
     {
-        t = ScreenSize.x * 2.0f + ScreenSize.y + (ScreenSize.y - pixelPos.y); // Left edge (bottom to top)
+        float tSub = smoothstep(0.666f, 1.0f, s);
+        artworkCol = lerp(HotColor.rgb, Color3.rgb, tSub);
     }
-    float normT = t / max(1.0f, perimeter);
 
-    // 4. Multi-Harmonic Wave Animation & Continuous Energy Ripples
-    // Forward-additive propagation avoids destructive velocity cancellation between Time and Phase
-    float twoPi = 6.2831853f;
+    // Saturation and luma boost (Rec. 601 coefficients: 0.299, 0.587, 0.114)
+    float luma = dot(artworkCol, float3(0.299f, 0.587f, 0.114f));
+    float3 satColor = saturate(lerp(float3(luma, luma, luma), artworkCol, 1.35f) * 1.06f);
+    float brightScale = segmentEnv * 0.45f + 1.0f;
+    float3 col = saturate(satColor * brightScale);
 
-    // Fundamental harmonic: perimeter wave locked to Phase with smooth continuous Time drift
-    float phi1 = normT * twoPi * 2.0f + (Phase * twoPi) + (Time * 0.40f);
-    float h1 = 0.50f * sin(phi1);
+    // 10. Soft White Luminous Highlight at Wave Crest (Centered at selected corner!)
+    float angularCore = saturate(1.0f - segDist / 0.09f);
+    float depthCore = saturate(1.0f - edgeDist / max(reach * 0.45f, 1.0f));
+    float whiteIntensity = angularCore * depthCore * depthCore * 0.75f;
+    col = lerp(col, float3(1.0f, 1.0f, 1.0f), whiteIntensity);
 
-    // Secondary harmonic: ripple component modulated continuously by live audio energy
-    float phi2 = normT * twoPi * 5.0f - (Time * 0.75f) - (Phase * 3.14159f);
-    float h2 = 0.35f * sin(phi2) * (0.45f + AudioLevel * 0.95f);
+    // Add incandescent liquid meniscus tip during reveal
+    if (RevealProgress < 1.0f)
+    {
+        col = saturate(col + meniscusGlow * 0.45f * lerp(HotColor.rgb, float3(1.0f, 1.0f, 1.0f), 0.75f));
+    }
 
-    // Tertiary flutter: fine turbulence energized during louder passages
-    float phi3 = normT * twoPi * 8.0f + (Time * 1.50f) + (Phase * twoPi * 1.5f);
-    float h3 = 0.20f * sin(phi3) * (0.20f + AudioLevel * 1.40f);
+    // Dynamic bloom surge modulation
+    if (effectiveBloom > 0.0f)
+    {
+        float bloomLuma = dot(col, float3(0.299f, 0.587f, 0.114f));
+        float3 satBoost = lerp(float3(bloomLuma, bloomLuma, bloomLuma), col, 1.0f + effectiveBloom * 0.70f);
+        col = saturate(satBoost * (1.0f + effectiveBloom * 0.85f));
+    }
 
-    float waveTotal = h1 + h2 + h3;
-    float plasma = saturate(waveTotal * 0.5f + 0.5f);
+    // 11. Smooth Hermite Falloff (Proportional soft cubic transition)
+    float falloffSpan = max(reach * 0.35f, 3.0f);
+    float alphaFactor = saturate((reach - edgeDist) / falloffSpan);
+    float smoothAlpha = alphaFactor * alphaFactor * (3.0f - 2.0f * alphaFactor);
 
-    // Modulate with 4-octave spatial procedural noise
-    // Noise rate accelerates with live music energy for dynamic surface flow
-    float noiseRate = 0.18f + AudioLevel * 0.36f;
-    float noiseVal = fbm(float2(normT * 8.0f + Phase * 0.4f, Time * noiseRate));
-    plasma = saturate(plasma * 0.68f + noiseVal * 0.32f);
+    // Output Premultiplied Alpha for DirectComposition
+    float finalAlpha = saturate(smoothAlpha * effectiveWaveEnv * GlowMultiplier * HotColor.a);
+    if (RevealProgress < 1.0f)
+    {
+        finalAlpha *= revealMask;
+    }
 
-    // 5. Chromatic Mixing (Deep to Hot Colors)
-    // Audio energy and beat impacts dynamically shift the balance towards HotColor
-    float mixRatio = saturate(plasma * Balance + BeatPulse * 0.35f + Bloom * 0.45f + AudioLevel * 0.30f);
-    float4 activeColor = lerp(DeepColor, HotColor, mixRatio);
-
-    // 6. Transverse Exponential Intensity Falloff & Bloom
-    // Core rim line expands with continuous energy and transient beats
-    float dynamicThickness = baseThickness * (1.0f + AudioLevel * 0.35f + BeatPulse * 0.30f);
-    float coreFalloff = exp(-edgeDist / (dynamicThickness * 0.85f));
-
-    float ambientSpan = dynamicThickness * (1.8f + AudioLevel * 0.70f + BeatPulse * 1.10f + Bloom * 2.20f);
-    float ambientFalloff = exp(-edgeDist / max(1.0f, ambientSpan)) * 0.65f;
-    float totalIntensity = saturate(coreFalloff + ambientFalloff);
-
-    // Dynamic glow boost: continuous audio radiance with explosive beat flashes
-    float dynamicBoost = 1.0f + AudioLevel * 0.60f + BeatPulse * 0.45f + Bloom * 0.85f;
-    float alpha = saturate(totalIntensity * activeColor.a * GlowMultiplier * dynamicBoost);
-
-    // 7. Output Premultiplied Alpha for DirectComposition
-    return float4(activeColor.rgb * alpha, alpha);
+    return float4(col * finalAlpha, finalAlpha);
 }

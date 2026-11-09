@@ -18,6 +18,7 @@ class Window
 {
 public:
     using ResizeCallback = std::function<void(uint32_t width, uint32_t height)>;
+    using EscapeCallback = std::function<bool()>;
 
     Window();
     ~Window();
@@ -26,9 +27,14 @@ public:
     Window& operator=(const Window&) = delete;
 
     bool Initialize(HINSTANCE hInstance, ResizeCallback onResize);
+    void SetOnEscape(EscapeCallback onEscape) { m_onEscape = std::move(onEscape); }
     void Shutdown();
 
     bool ProcessMessages();
+
+    void Show();
+    void Hide();
+    bool IsVisible() const noexcept;
 
     HWND GetHandle() const noexcept { return m_hwnd; }
     uint32_t GetWidth() const noexcept { return m_width; }
@@ -48,6 +54,7 @@ private:
     uint32_t m_height = 0;
     bool m_running = false;
     ResizeCallback m_onResize;
+    EscapeCallback m_onEscape;
 
     static constexpr int HOTKEY_ID_ESC = 1001;
     static constexpr int HOTKEY_ID_CTRL_SHIFT_Q = 1002;

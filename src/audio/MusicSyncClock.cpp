@@ -98,7 +98,7 @@ void MusicSyncClock::UpdateLevel(double level, double now)
     m_baseline += FLOOR_ALPHA * (clampedLevel - m_baseline);
 }
 
-AudioRenderState MusicSyncClock::Tick(double now)
+AudioRenderState MusicSyncClock::Tick(double now, bool isPlaying, double speedMultiplier)
 {
     std::lock_guard<std::mutex> lock(m_mutex);
 
@@ -109,6 +109,9 @@ AudioRenderState MusicSyncClock::Tick(double now)
         dt = std::clamp(now - m_lastFrame, 0.0, 0.10);
     }
     m_lastFrame = now;
+
+    // Clamp speedMultiplier to valid range [0.2, 3.0]
+    const double speedMul = std::clamp(speedMultiplier, 0.2, 3.0);
 
     // Check if loud audio was heard recently
     const bool isAudioActive = (now - m_lastLoud < SILENCE_TIMEOUT);
@@ -132,10 +135,25 @@ AudioRenderState MusicSyncClock::Tick(double now)
         m_continuousEnergy += releaseAlpha * (m_rawTargetLevel - m_continuousEnergy);
     }
 
+    // Playback-aware freezing: when playback is paused, freeze phase and position completely
+    if (!isPlaying)
+    {
+        m_dynEase = std::max(0.0, m_dynEase - dt * 2.0);
+        m_energy = std::max(0.0, m_energy - dt * 1.5);
+
+        state.phase = static_cast<float>(m_pos); // Frozen at current position
+        state.bloom = 0.0f;
+        state.beatPulse = 0.0f;
+        state.energy = static_cast<float>(m_continuousEnergy);
+        state.bpm = static_cast<float>(m_bpm);
+        state.isPlaying = false;
+        return state;
+    }
+
     if (!m_playing)
     {
-        // Smooth restrained continuous idle rotation (no freeze, no flash)
-        m_pos += m_idleSpeed * dt;
+        // Smooth restrained continuous idle rotation while active session is quiet
+        m_pos += m_idleSpeed * dt * speedMul;
         m_dynEase = std::max(0.0, m_dynEase - dt * 2.0);
         m_energy = std::max(0.0, m_energy - dt * 1.5);
 
@@ -164,11 +182,11 @@ AudioRenderState MusicSyncClock::Tick(double now)
     const double targetEase = normEnergy * normEnergy;
     m_dynEase += std::min(dt * 4.0, 1.0) * (targetEase - m_dynEase);
 
-    // 4. Instantaneous phase velocity integration
+    // 4. Instantaneous phase velocity integration (scaled by speedMultiplier)
     const double baselineSpeed = 0.18 + 0.22 * m_dynEase;
     const double pulseAmp = 0.06 + 1.94 * m_dynEase;
     const double speed = (baselineSpeed + pulse * pulseAmp) / m_interval * SCALE;
-    m_pos += speed * dt;
+    m_pos += speed * dt * speedMul;
 
     // 5. Evaluate bloom envelope
     float bloom = 0.0f;

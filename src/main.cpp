@@ -20,6 +20,9 @@
 #include "audio/WasapiLoopback.hpp"
 #include "media/MediaSessionWatcher.hpp"
 #include "ui/MediaCardWindow.hpp"
+#include "settings/LightingSettings.hpp"
+#include "ui/LightingStudioWindow.hpp"
+#include "ui/AODWindow.hpp"
 
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, PWSTR /*pCmdLine*/, int /*nCmdShow*/)
 {
@@ -40,6 +43,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, PWSTR /*pC
     }
 
     std::ofstream logFile("lumn_debug.log", std::ios::app);
+    logFile << std::unitbuf;
     logFile << "[Lumn] Launched. Raw command line: " << GetCommandLineA() << "\n";
 
     // Parse command-line arguments using standard GetCommandLineW
@@ -48,6 +52,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, PWSTR /*pC
     float customThickness = 1.0f;
     bool showCard = true; // Phase 4A Floating Media Card enabled by default
     bool useLiquidGlass = true; // Phase 4B.1 Liquid Glass prototype enabled by default
+    int forcedCorner = -1; // -1 = Random (normal operation), 0..3 = Deterministic corner override
+    lumn::settings::AODMode cliAodMode = lumn::settings::AODMode::None;
 
     int argc = 0;
     LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
@@ -93,6 +99,21 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, PWSTR /*pC
             {
                 useLiquidGlass = true;
             }
+            else if (arg == L"--corner" && i + 1 < argc)
+            {
+                forcedCorner = std::stoi(argv[++i]);
+                logFile << "[Lumn] Deterministic forced corner = " << forcedCorner << "\n";
+            }
+            else if (arg == L"--aod-black")
+            {
+                cliAodMode = lumn::settings::AODMode::Black;
+                logFile << "[Lumn] Initial AOD mode set to Black via CLI.\n";
+            }
+            else if (arg == L"--aod-wallpaper")
+            {
+                cliAodMode = lumn::settings::AODMode::Wallpaper;
+                logFile << "[Lumn] Initial AOD mode set to Wallpaper via CLI.\n";
+            }
         }
         LocalFree(argv);
     }
@@ -101,14 +122,20 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, PWSTR /*pC
     lumn::platform::Window window;
     lumn::render::D3D11Renderer renderer;
 
+    // Load persisted lighting studio configuration
+    lumn::settings::LightingConfig lightingConfig;
+    lightingConfig.Load();
+
     if (customCornerRadius > 0.0f)
     {
         renderer.SetCornerRadius(customCornerRadius);
     }
     if (customThickness != 1.0f)
     {
-        renderer.SetThickness(customThickness);
+        lightingConfig.thickness = customThickness;
     }
+    renderer.SetThickness(lightingConfig.thickness);
+    renderer.SetGlowMultiplier(lightingConfig.glowIntensity);
 
     logFile << "[Lumn] Initializing window..." << std::endl;
     bool initWindow = window.Initialize(hInstance, [&renderer](uint32_t width, uint32_t height) {
@@ -150,6 +177,11 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, PWSTR /*pC
     if (cardInitialized)
     {
         mediaCard.SetLiquidGlassEnabled(useLiquidGlass);
+        mediaCard.SetCardMaterial(lightingConfig.mediaCard.material);
+        mediaCard.SetSolidColorMode(lightingConfig.mediaCard.solidColorMode);
+        mediaCard.SetCustomColors(lightingConfig.mediaCard.customColor1,
+                                  lightingConfig.mediaCard.customColor2,
+                                  lightingConfig.mediaCard.customColor3);
         logFile << "[Lumn] MediaCardWindow liquid glass mode: " << (useLiquidGlass ? "ENABLED" : "DISABLED (Fallback Glass)") << std::endl;
         if (showCard)
         {
@@ -158,15 +190,84 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, PWSTR /*pC
         }
     }
 
+    // Initialize Lighting Studio Settings Window
+    lumn::ui::LightingStudioWindow lightingStudio;
+    lightingStudio.Initialize(hInstance, &lightingConfig, [&renderer, &lightingConfig, &mediaCard]() {
+        renderer.SetThickness(lightingConfig.thickness);
+        renderer.SetGlowMultiplier(lightingConfig.glowIntensity);
+        mediaCard.SetCardMaterial(lightingConfig.mediaCard.material);
+        mediaCard.SetSolidColorMode(lightingConfig.mediaCard.solidColorMode);
+        mediaCard.SetCustomColors(lightingConfig.mediaCard.customColor1,
+                                  lightingConfig.mediaCard.customColor2,
+                                  lightingConfig.mediaCard.customColor3);
+    });
+
+    mediaCard.SetOnMaterialChanged([&lightingConfig](lumn::settings::CardMaterial mat) {
+        lightingConfig.mediaCard.material = mat;
+        lightingConfig.mediaCard.Save();
+    });
+
+    mediaCard.SetOnOpenLightingStudio([&lightingStudio]() {
+        lightingStudio.Show();
+    });
+
+    // Initialize Always-On Display (AOD) Presentation Layer
+    lumn::ui::AODWindow aodWindow;
+    bool aodInitialized = aodWindow.Initialize(hInstance, window.GetHandle(), mediaCard.GetHandle());
+    logFile << "[Lumn] AODWindow.Initialize returned: " << aodInitialized << std::endl;
+
+    auto updateAODMode = [&](lumn::settings::AODMode newMode) {
+        aodWindow.SetMode(newMode);
+        mediaCard.SetAODMode(newMode);
+        lightingConfig.aodMode = newMode;
+        lightingConfig.Save();
+        logFile << "[Lumn] AOD mode updated to: " << static_cast<int>(newMode) << std::endl;
+    };
+
+    mediaCard.SetOnAODModeChanged([updateAODMode](lumn::settings::AODMode mode) {
+        updateAODMode(mode);
+    });
+
+    aodWindow.SetOnModeChanged([&mediaCard, &lightingConfig, &logFile](lumn::settings::AODMode mode) {
+        mediaCard.SetAODMode(mode);
+        lightingConfig.aodMode = mode;
+        lightingConfig.Save();
+        logFile << "[Lumn] AODWindow dismissed/changed mode to: " << static_cast<int>(mode) << std::endl;
+    });
+
+    aodWindow.SetOnContextMenu([&mediaCard]() {
+        mediaCard.ShowContextMenu();
+    });
+
+    window.SetOnEscape([&aodWindow, updateAODMode]() -> bool {
+        if (aodWindow.IsActive())
+        {
+            updateAODMode(lumn::settings::AODMode::None);
+            return true;
+        }
+        return false;
+    });
+
+    if (cliAodMode != lumn::settings::AODMode::None)
+    {
+        updateAODMode(cliAodMode);
+    }
+
     // High-resolution timer setup
     LARGE_INTEGER frequency, startTime, currentTime;
     QueryPerformanceFrequency(&frequency);
     QueryPerformanceCounter(&startTime);
 
+    // Trigger initial activation reveal animation right as render loop begins
+    renderer.TriggerActivationAnimation(forcedCorner);
+
     // Animation & message loop
     logFile << "[Lumn] Entering animation loop. IsRunning=" << window.IsRunning() << " testExitAfter=" << testExitAfter << std::endl;
 
     uint32_t frameCount = 0;
+    double lastElapsedSeconds = 0.0;
+    double accumulatedAnimTime = 0.0;
+
     while (window.IsRunning())
     {
         if (!window.ProcessMessages())
@@ -175,12 +276,16 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, PWSTR /*pC
             break;
         }
 
-        // Pump media card window messages
+        // Pump media card and AOD window messages
         mediaCard.ProcessMessages();
+        aodWindow.ProcessMessages();
 
         QueryPerformanceCounter(&currentTime);
         double elapsedSeconds = static_cast<double>(currentTime.QuadPart - startTime.QuadPart) / frequency.QuadPart;
         float timeSec = static_cast<float>(elapsedSeconds);
+
+        double dt = (lastElapsedSeconds > 0.0) ? std::clamp(elapsedSeconds - lastElapsedSeconds, 0.0, 0.10) : 0.016;
+        lastElapsedSeconds = elapsedSeconds;
 
         // Optional automated timeout exit
         if (testExitAfter > 0.0f && timeSec >= testExitAfter)
@@ -189,16 +294,70 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, PWSTR /*pC
             break;
         }
 
-        // Phase 3 & 3.1: Query current media session track and target palette with generation tracking
+        // Query current media session track and target palette with generation tracking
         auto trackInfo = mediaWatcher->GetCurrentTrackInfo();
-        renderer.SetTargetPalette(trackInfo.palette.hot, trackInfo.palette.deep, trackInfo.palette.balance, trackInfo.generation);
 
-        // Phase 2.1: Continuous audio-reactive motion with layered beat pulses
-        // When audio is quiet/idle, Tick() smoothly transitions to restrained perimeter drift
-        lumn::audio::AudioRenderState audioState = clock->Tick(timeSec);
+        if (lightingStudio.IsVisible())
+        {
+            lightingStudio.SetArtworkPalette(trackInfo.palette);
+        }
+
+        // Playback-aware animation freezing: advance continuous wave time only while actively playing
+        float speedMultiplier = std::clamp(lightingConfig.animationSpeed, 0.2f, 3.0f);
+        if (trackInfo.isPlaying)
+        {
+            accumulatedAnimTime += dt * speedMultiplier;
+        }
+        float animTime = static_cast<float>(accumulatedAnimTime);
+
+        // Upload palette to renderer (Artwork, Mixed, or Solid)
+        if (lightingConfig.colorSource == lumn::settings::ColorSourceMode::Solid)
+        {
+            // Solid mode: uniform single color across the entire perimeter (no blending with other colors)
+            renderer.SetTargetPalette(
+                lightingConfig.solidColor,
+                lightingConfig.solidColor,
+                lightingConfig.solidColor,
+                lightingConfig.solidColor,
+                0.50f,
+                0
+            );
+        }
+        else if (lightingConfig.colorSource == lumn::settings::ColorSourceMode::Mixed)
+        {
+            // Mixed mode: smooth interpolation between Color 2 -> Color 1 -> Color 3
+            float deep[4] = {
+                lightingConfig.color2[0] * 0.35f,
+                lightingConfig.color2[1] * 0.35f,
+                lightingConfig.color2[2] * 0.35f,
+                1.0f
+            };
+            renderer.SetTargetPalette(
+                lightingConfig.color1,
+                deep,
+                lightingConfig.color2,
+                lightingConfig.color3,
+                0.50f,
+                0
+            );
+        }
+        else
+        {
+            renderer.SetTargetPalette(
+                trackInfo.palette.hot,
+                trackInfo.palette.deep,
+                trackInfo.palette.color2,
+                trackInfo.palette.color3,
+                trackInfo.palette.balance,
+                trackInfo.generation
+            );
+        }
+
+        // Audio clock synchronizes phase (preserves phase across speed changes and freezes when paused)
+        lumn::audio::AudioRenderState audioState = clock->Tick(elapsedSeconds, trackInfo.isPlaying, speedMultiplier);
 
         // Render pass-through rim lighting overlay
-        renderer.Render(timeSec, audioState.phase, audioState.bloom, audioState.energy, audioState.beatPulse);
+        renderer.Render(animTime, audioState.phase, audioState.bloom, audioState.energy, audioState.beatPulse);
 
         // Render interactive floating media card
         if (mediaCard.IsVisible())
@@ -212,6 +371,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, PWSTR /*pC
     logFile << "[Lumn] Exited animation loop after " << frameCount << " frames. Shutting down." << std::endl;
     logFile.close();
 
+    aodWindow.Shutdown();
+    lightingStudio.Shutdown();
     mediaCard.Shutdown();
     mediaWatcher->Stop();
     wasapi.Stop();

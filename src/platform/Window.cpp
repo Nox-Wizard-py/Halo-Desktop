@@ -110,6 +110,27 @@ bool Window::Initialize(HINSTANCE hInstance, ResizeCallback onResize)
     return true;
 }
 
+void Window::Show()
+{
+    if (m_hwnd)
+    {
+        ShowWindow(m_hwnd, SW_SHOWNOACTIVATE);
+    }
+}
+
+void Window::Hide()
+{
+    if (m_hwnd)
+    {
+        ShowWindow(m_hwnd, SW_HIDE);
+    }
+}
+
+bool Window::IsVisible() const noexcept
+{
+    return m_hwnd && IsWindowVisible(m_hwnd);
+}
+
 void Window::Shutdown()
 {
     if (m_hwnd)
@@ -216,7 +237,18 @@ LRESULT Window::HandleMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam
     {
     case WM_HOTKEY:
     {
-        if (wParam == HOTKEY_ID_ESC || wParam == HOTKEY_ID_CTRL_SHIFT_Q)
+        if (wParam == HOTKEY_ID_ESC)
+        {
+            if (m_onEscape && m_onEscape())
+            {
+                return 0; // Escape was handled/consumed without quitting application
+            }
+            std::cout << "[Lumn] Exit hotkey received. Shutting down overlay...\n";
+            m_running = false;
+            PostQuitMessage(0);
+            return 0;
+        }
+        else if (wParam == HOTKEY_ID_CTRL_SHIFT_Q)
         {
             std::cout << "[Lumn] Exit hotkey received. Shutting down overlay...\n";
             m_running = false;
