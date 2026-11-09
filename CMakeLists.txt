@@ -42,12 +42,14 @@ set(SOURCES
     src/ui/LightingStudioWindow.cpp
     src/ui/AODWindow.hpp
     src/ui/AODWindow.cpp
+    resources/halo.rc
 )
 
 add_executable(LumnOverlay WIN32 ${SOURCES})
 
 target_include_directories(LumnOverlay PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${CMAKE_CURRENT_SOURCE_DIR}/resources
     "C:/Program Files (x86)/Windows Kits/10/Include/10.0.26100.0/cppwinrt"
 )
 
@@ -99,10 +101,12 @@ add_executable(LumnVerification
     src/media/MediaSessionWatcher.cpp
     src/media/ColorExtractor.cpp
     src/audio/MusicSyncClock.cpp
+    resources/halo.rc
 )
 
 target_include_directories(LumnVerification PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${CMAKE_CURRENT_SOURCE_DIR}/resources
     "C:/Program Files (x86)/Windows Kits/10/Include/10.0.26100.0/cppwinrt"
 )
 

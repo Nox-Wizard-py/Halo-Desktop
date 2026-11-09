@@ -1,4 +1,5 @@
 #include "Window.hpp"
+#include "resource.h"
 #include <iostream>
 #include <fstream>
 #include <string>
@@ -30,11 +31,16 @@ bool Window::Initialize(HINSTANCE hInstance, ResizeCallback onResize)
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
 
     // 2. Register Window Class
+    HICON hIconBig = LoadIconW(m_hInstance, MAKEINTRESOURCEW(IDI_APP_ICON));
+    HICON hIconSm = static_cast<HICON>(LoadImageW(m_hInstance, MAKEINTRESOURCEW(IDI_APP_ICON), IMAGE_ICON, GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), LR_DEFAULTCOLOR));
+
     WNDCLASSEXW wc = {};
     wc.cbSize = sizeof(wc);
     wc.style = CS_HREDRAW | CS_VREDRAW;
     wc.lpfnWndProc = WindowProc;
     wc.hInstance = m_hInstance;
+    wc.hIcon = hIconBig;
+    wc.hIconSm = hIconSm;
     wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
     wc.hbrBackground = nullptr; // DirectComposition handles presentation
     wc.lpszClassName = WINDOW_CLASS_NAME;
@@ -44,7 +50,7 @@ bool Window::Initialize(HINSTANCE hInstance, ResizeCallback onResize)
         DWORD err = GetLastError();
         if (err != ERROR_CLASS_ALREADY_EXISTS)
         {
-            LogWindowMsg("[Lumn] Failed to register window class. Error: " + std::to_string(err));
+            LogWindowMsg("[Halo] Failed to register window class. Error: " + std::to_string(err));
             return false;
         }
     }
@@ -53,7 +59,7 @@ bool Window::Initialize(HINSTANCE hInstance, ResizeCallback onResize)
     int posX = 0;
     int posY = 0;
     QueryPrimaryMonitorBounds(posX, posY, m_width, m_height);
-    LogWindowMsg("[Lumn] Primary monitor bounds: " + std::to_string(m_width) + "x" + std::to_string(m_height) +
+    LogWindowMsg("[Halo] Primary monitor bounds: " + std::to_string(m_width) + "x" + std::to_string(m_height) +
                  " at (" + std::to_string(posX) + "," + std::to_string(posY) + ")");
 
     // 4. Create Transparent Click-Through Topmost Window
@@ -69,7 +75,7 @@ bool Window::Initialize(HINSTANCE hInstance, ResizeCallback onResize)
     m_hwnd = CreateWindowExW(
         dwExStyle,
         WINDOW_CLASS_NAME,
-        L"Lumn Rim Overlay",
+        L"Halo Desktop Rim Overlay",
         dwStyle,
         posX,
         posY,
@@ -84,8 +90,17 @@ bool Window::Initialize(HINSTANCE hInstance, ResizeCallback onResize)
     if (!m_hwnd)
     {
         DWORD err = GetLastError();
-        LogWindowMsg("[Lumn] Failed to create overlay window. Error: " + std::to_string(err));
+        LogWindowMsg("[Halo] Failed to create overlay window. Error: " + std::to_string(err));
         return false;
+    }
+
+    if (hIconBig)
+    {
+        SendMessageW(m_hwnd, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(hIconBig));
+    }
+    if (hIconSm)
+    {
+        SendMessageW(m_hwnd, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(hIconSm));
     }
 
     // 5. Register Global Hotkeys for Clean Exit
@@ -93,7 +108,7 @@ bool Window::Initialize(HINSTANCE hInstance, ResizeCallback onResize)
     // we register ESC and Ctrl+Shift+Q as system hotkeys to close the overlay cleanly.
     if (!RegisterHotKey(m_hwnd, HOTKEY_ID_ESC, MOD_NOREPEAT, VK_ESCAPE))
     {
-        std::cerr << "[Lumn] Warning: Could not register ESC hotkey. Trying fallback hotkey.\n";
+        std::cerr << "[Halo] Warning: Could not register ESC hotkey. Trying fallback hotkey.\n";
     }
 
     RegisterHotKey(m_hwnd, HOTKEY_ID_CTRL_SHIFT_Q, MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT, 'Q');
@@ -103,9 +118,9 @@ bool Window::Initialize(HINSTANCE hInstance, ResizeCallback onResize)
     UpdateWindow(m_hwnd);
 
     m_running = true;
-    std::cout << "[Lumn] Native overlay window created (" << m_width << "x" << m_height 
+    std::cout << "[Halo] Native overlay window created (" << m_width << "x" << m_height 
               << " at " << posX << "," << posY << ")\n";
-    std::cout << "[Lumn] Press ESC or Ctrl+Shift+Q at any time to exit.\n";
+    std::cout << "[Halo] Press ESC or Ctrl+Shift+Q at any time to exit.\n";
 
     return true;
 }
@@ -243,14 +258,14 @@ LRESULT Window::HandleMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam
             {
                 return 0; // Escape was handled/consumed without quitting application
             }
-            std::cout << "[Lumn] Exit hotkey received. Shutting down overlay...\n";
+            std::cout << "[Halo] Exit hotkey received. Shutting down overlay...\n";
             m_running = false;
             PostQuitMessage(0);
             return 0;
         }
         else if (wParam == HOTKEY_ID_CTRL_SHIFT_Q)
         {
-            std::cout << "[Lumn] Exit hotkey received. Shutting down overlay...\n";
+            std::cout << "[Halo] Exit hotkey received. Shutting down overlay...\n";
             m_running = false;
             PostQuitMessage(0);
             return 0;
@@ -260,7 +275,7 @@ LRESULT Window::HandleMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam
 
     case WM_DISPLAYCHANGE:
     {
-        std::cout << "[Lumn] Display resolution change detected (WM_DISPLAYCHANGE).\n";
+        std::cout << "[Halo] Display resolution change detected (WM_DISPLAYCHANGE).\n";
         int newX = 0;
         int newY = 0;
         uint32_t newW = 0;

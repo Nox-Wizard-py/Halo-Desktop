@@ -1,4 +1,5 @@
 #include "MediaCardWindow.hpp"
+#include "resource.h"
 #include <dwmapi.h>
 #include <iostream>
 #include <algorithm>
@@ -137,13 +138,18 @@ bool MediaCardWindow::Initialize(HINSTANCE hInstance, std::shared_ptr<media::Med
     m_hInstance = hInstance;
     m_watcher = std::move(watcher);
 
-    const wchar_t CLASS_NAME[] = L"LumnMediaCardClass";
+    const wchar_t CLASS_NAME[] = L"HaloMediaCardClass";
+
+    HICON hIconBig = LoadIconW(hInstance, MAKEINTRESOURCEW(IDI_APP_ICON));
+    HICON hIconSm = static_cast<HICON>(LoadImageW(hInstance, MAKEINTRESOURCEW(IDI_APP_ICON), IMAGE_ICON, GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), LR_DEFAULTCOLOR));
 
     WNDCLASSEXW wc = {};
     wc.cbSize = sizeof(WNDCLASSEXW);
     wc.style = CS_HREDRAW | CS_VREDRAW;
     wc.lpfnWndProc = WindowProc;
     wc.hInstance = hInstance;
+    wc.hIcon = hIconBig;
+    wc.hIconSm = hIconSm;
     wc.lpszClassName = CLASS_NAME;
     wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
 
@@ -166,7 +172,7 @@ bool MediaCardWindow::Initialize(HINSTANCE hInstance, std::shared_ptr<media::Med
     m_hWnd = CreateWindowExW(
         exStyle,
         CLASS_NAME,
-        L"Lumn Media Card",
+        L"Halo Media Card",
         style,
         posX,
         posY,
@@ -181,6 +187,15 @@ bool MediaCardWindow::Initialize(HINSTANCE hInstance, std::shared_ptr<media::Med
     if (!m_hWnd)
     {
         return false;
+    }
+
+    if (hIconBig)
+    {
+        SendMessageW(m_hWnd, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(hIconBig));
+    }
+    if (hIconSm)
+    {
+        SendMessageW(m_hWnd, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(hIconSm));
     }
 
     // Disable DWM window frame rounding and disable system window border
@@ -237,7 +252,22 @@ bool MediaCardWindow::InitializeTray()
         return true;
     }
 
-    m_trayIcon = CreateHaloTrayIcon();
+    m_trayIcon = static_cast<HICON>(LoadImageW(
+        m_hInstance,
+        MAKEINTRESOURCEW(IDI_TRAY_ICON),
+        IMAGE_ICON,
+        GetSystemMetrics(SM_CXSMICON),
+        GetSystemMetrics(SM_CYSMICON),
+        LR_DEFAULTCOLOR
+    ));
+    if (!m_trayIcon)
+    {
+        m_trayIcon = LoadIconW(m_hInstance, MAKEINTRESOURCEW(IDI_APP_ICON));
+    }
+    if (!m_trayIcon)
+    {
+        m_trayIcon = CreateHaloTrayIcon();
+    }
 
     m_nid = {};
     m_nid.cbSize = sizeof(NOTIFYICONDATAW);

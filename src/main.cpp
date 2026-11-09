@@ -7,6 +7,7 @@
 
 #include <windows.h>
 #include <shellapi.h>
+#include <shobjidl.h>
 #include <iostream>
 #include <fstream>
 #include <string>
@@ -14,6 +15,7 @@
 
 #pragma comment(lib, "shell32.lib")
 
+#include "resource.h"
 #include "platform/Window.hpp"
 #include "render/D3D11Renderer.hpp"
 #include "audio/MusicSyncClock.hpp"
@@ -26,6 +28,9 @@
 
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, PWSTR /*pCmdLine*/, int /*nCmdShow*/)
 {
+    // Establish explicit Application User Model ID for Windows taskbar identity and window grouping
+    SetCurrentProcessExplicitAppUserModelID(L"Halo.Desktop.App");
+
     // Ensure thread is attached to the interactive "default" desktop if launched from an isolated runner/sandbox
     HDESK hCurrentDesk = GetThreadDesktop(GetCurrentThreadId());
     char deskName[128] = {};
@@ -44,7 +49,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, PWSTR /*pC
 
     std::ofstream logFile("lumn_debug.log", std::ios::app);
     logFile << std::unitbuf;
-    logFile << "[Lumn] Launched. Raw command line: " << GetCommandLineA() << "\n";
+    logFile << "[Halo] Launched. Raw command line: " << GetCommandLineA() << "\n";
 
     // Parse command-line arguments using standard GetCommandLineW
     float testExitAfter = -1.0f; // < 0 means run continuously
@@ -59,7 +64,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, PWSTR /*pC
     LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
     if (argv)
     {
-        logFile << "[Lumn] Argc = " << argc << "\n";
+        logFile << "[Halo] Argc = " << argc << "\n";
         for (int i = 0; i < argc; ++i)
         {
             char argBuf[512] = { 0 };
@@ -73,7 +78,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, PWSTR /*pC
             if ((arg == L"--test-exit-after" || arg == L"-t") && i + 1 < argc)
             {
                 testExitAfter = std::stof(argv[++i]);
-                logFile << "[Lumn] Parsed testExitAfter = " << testExitAfter << "\n";
+                logFile << "[Halo] Parsed testExitAfter = " << testExitAfter << "\n";
             }
             else if (arg == L"--corner-radius" && i + 1 < argc)
             {
@@ -102,17 +107,17 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, PWSTR /*pC
             else if (arg == L"--corner" && i + 1 < argc)
             {
                 forcedCorner = std::stoi(argv[++i]);
-                logFile << "[Lumn] Deterministic forced corner = " << forcedCorner << "\n";
+                logFile << "[Halo] Deterministic forced corner = " << forcedCorner << "\n";
             }
             else if (arg == L"--aod-black")
             {
                 cliAodMode = lumn::settings::AODMode::Black;
-                logFile << "[Lumn] Initial AOD mode set to Black via CLI.\n";
+                logFile << "[Halo] Initial AOD mode set to Black via CLI.\n";
             }
             else if (arg == L"--aod-wallpaper")
             {
                 cliAodMode = lumn::settings::AODMode::Wallpaper;
-                logFile << "[Lumn] Initial AOD mode set to Wallpaper via CLI.\n";
+                logFile << "[Halo] Initial AOD mode set to Wallpaper via CLI.\n";
             }
         }
         LocalFree(argv);
@@ -137,25 +142,25 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, PWSTR /*pC
     renderer.SetThickness(lightingConfig.thickness);
     renderer.SetGlowMultiplier(lightingConfig.glowIntensity);
 
-    logFile << "[Lumn] Initializing window..." << std::endl;
+    logFile << "[Halo] Initializing window..." << std::endl;
     bool initWindow = window.Initialize(hInstance, [&renderer](uint32_t width, uint32_t height) {
         renderer.Resize(width, height);
     });
 
-    logFile << "[Lumn] window.Initialize returned: " << initWindow << std::endl;
+    logFile << "[Halo] window.Initialize returned: " << initWindow << std::endl;
     if (!initWindow)
     {
-        logFile << "[Lumn] ERROR: window.Initialize failed." << std::endl;
+        logFile << "[Halo] ERROR: window.Initialize failed." << std::endl;
         return 1;
     }
 
-    logFile << "[Lumn] Initializing renderer with size " << window.GetWidth() << "x" << window.GetHeight() << "..." << std::endl;
+    logFile << "[Halo] Initializing renderer with size " << window.GetWidth() << "x" << window.GetHeight() << "..." << std::endl;
     std::wstring shaderPath = L"plasmaRim.hlsl";
     bool initRenderer = renderer.Initialize(window.GetHandle(), window.GetWidth(), window.GetHeight(), shaderPath);
-    logFile << "[Lumn] renderer.Initialize returned: " << initRenderer << std::endl;
+    logFile << "[Halo] renderer.Initialize returned: " << initRenderer << std::endl;
     if (!initRenderer)
     {
-        logFile << "[Lumn] ERROR: renderer.Initialize failed." << std::endl;
+        logFile << "[Halo] ERROR: renderer.Initialize failed." << std::endl;
         return 1;
     }
 
@@ -163,17 +168,17 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, PWSTR /*pC
     auto clock = std::make_shared<lumn::audio::MusicSyncClock>();
     lumn::audio::WasapiLoopback wasapi;
     bool wasapiStarted = wasapi.Start(clock);
-    logFile << "[Lumn] WASAPI audio capture started: " << wasapiStarted << std::endl;
+    logFile << "[Halo] WASAPI audio capture started: " << wasapiStarted << std::endl;
 
     // Initialize Phase 3 GSMTC Media Session Watcher & Artwork Extractor
     auto mediaWatcher = std::make_shared<lumn::media::MediaSessionWatcher>();
     bool mediaStarted = mediaWatcher->Start();
-    logFile << "[Lumn] GSMTC media session watcher started: " << mediaStarted << std::endl;
+    logFile << "[Halo] GSMTC media session watcher started: " << mediaStarted << std::endl;
 
     // Initialize Phase 4A Floating Media Card Window
     lumn::ui::MediaCardWindow mediaCard;
     bool cardInitialized = mediaCard.Initialize(hInstance, mediaWatcher);
-    logFile << "[Lumn] MediaCardWindow.Initialize returned: " << cardInitialized << std::endl;
+    logFile << "[Halo] MediaCardWindow.Initialize returned: " << cardInitialized << std::endl;
     if (cardInitialized)
     {
         mediaCard.SetLiquidGlassEnabled(useLiquidGlass);
@@ -182,11 +187,11 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, PWSTR /*pC
         mediaCard.SetCustomColors(lightingConfig.mediaCard.customColor1,
                                   lightingConfig.mediaCard.customColor2,
                                   lightingConfig.mediaCard.customColor3);
-        logFile << "[Lumn] MediaCardWindow liquid glass mode: " << (useLiquidGlass ? "ENABLED" : "DISABLED (Fallback Glass)") << std::endl;
+        logFile << "[Halo] MediaCardWindow liquid glass mode: " << (useLiquidGlass ? "ENABLED" : "DISABLED (Fallback Glass)") << std::endl;
         if (showCard)
         {
             mediaCard.Show();
-            logFile << "[Lumn] MediaCardWindow shown (Ctrl+Shift+M toggles visibility, Ctrl+Shift+G toggles glass mode)." << std::endl;
+            logFile << "[Halo] MediaCardWindow shown (Ctrl+Shift+M toggles visibility, Ctrl+Shift+G toggles glass mode)." << std::endl;
         }
     }
 
@@ -214,14 +219,14 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, PWSTR /*pC
     // Initialize Always-On Display (AOD) Presentation Layer
     lumn::ui::AODWindow aodWindow;
     bool aodInitialized = aodWindow.Initialize(hInstance, window.GetHandle(), mediaCard.GetHandle());
-    logFile << "[Lumn] AODWindow.Initialize returned: " << aodInitialized << std::endl;
+    logFile << "[Halo] AODWindow.Initialize returned: " << aodInitialized << std::endl;
 
     auto updateAODMode = [&](lumn::settings::AODMode newMode) {
         aodWindow.SetMode(newMode);
         mediaCard.SetAODMode(newMode);
         lightingConfig.aodMode = newMode;
         lightingConfig.Save();
-        logFile << "[Lumn] AOD mode updated to: " << static_cast<int>(newMode) << std::endl;
+        logFile << "[Halo] AOD mode updated to: " << static_cast<int>(newMode) << std::endl;
     };
 
     mediaCard.SetOnAODModeChanged([updateAODMode](lumn::settings::AODMode mode) {
@@ -232,7 +237,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, PWSTR /*pC
         mediaCard.SetAODMode(mode);
         lightingConfig.aodMode = mode;
         lightingConfig.Save();
-        logFile << "[Lumn] AODWindow dismissed/changed mode to: " << static_cast<int>(mode) << std::endl;
+        logFile << "[Halo] AODWindow dismissed/changed mode to: " << static_cast<int>(mode) << std::endl;
     });
 
     aodWindow.SetOnContextMenu([&mediaCard]() {
@@ -262,7 +267,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, PWSTR /*pC
     renderer.TriggerActivationAnimation(forcedCorner);
 
     // Animation & message loop
-    logFile << "[Lumn] Entering animation loop. IsRunning=" << window.IsRunning() << " testExitAfter=" << testExitAfter << std::endl;
+    logFile << "[Halo] Entering animation loop. IsRunning=" << window.IsRunning() << " testExitAfter=" << testExitAfter << std::endl;
 
     uint32_t frameCount = 0;
     double lastElapsedSeconds = 0.0;
@@ -272,7 +277,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, PWSTR /*pC
     {
         if (!window.ProcessMessages())
         {
-            logFile << "[Lumn] ProcessMessages returned false, exiting loop." << std::endl;
+            logFile << "[Halo] ProcessMessages returned false, exiting loop." << std::endl;
             break;
         }
 
@@ -290,7 +295,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, PWSTR /*pC
         // Optional automated timeout exit
         if (testExitAfter > 0.0f && timeSec >= testExitAfter)
         {
-            logFile << "[Lumn] testExitAfter reached (" << timeSec << "s >= " << testExitAfter << "s). Exiting cleanly." << std::endl;
+            logFile << "[Halo] testExitAfter reached (" << timeSec << "s >= " << testExitAfter << "s). Exiting cleanly." << std::endl;
             break;
         }
 
@@ -368,7 +373,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, PWSTR /*pC
         frameCount++;
     }
 
-    logFile << "[Lumn] Exited animation loop after " << frameCount << " frames. Shutting down." << std::endl;
+    logFile << "[Halo] Exited animation loop after " << frameCount << " frames. Shutting down." << std::endl;
     logFile.close();
 
     aodWindow.Shutdown();

@@ -1,4 +1,5 @@
 #include "LightingStudioWindow.hpp"
+#include "resource.h"
 #include <dwmapi.h>
 #include <cmath>
 #include <algorithm>
@@ -112,10 +113,15 @@ bool LightingStudioWindow::Initialize(HINSTANCE hInstance, settings::LightingCon
     if (FAILED(hr)) return false;
 
     // Register Win32 Window Class
+    HICON hIconBig = LoadIconW(m_hInstance, MAKEINTRESOURCEW(IDI_APP_ICON));
+    HICON hIconSm = static_cast<HICON>(LoadImageW(m_hInstance, MAKEINTRESOURCEW(IDI_APP_ICON), IMAGE_ICON, GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), LR_DEFAULTCOLOR));
+
     WNDCLASSEXW wc = {};
     wc.cbSize = sizeof(wc);
     wc.lpfnWndProc = WindowProc;
     wc.hInstance = m_hInstance;
+    wc.hIcon = hIconBig;
+    wc.hIconSm = hIconSm;
     wc.lpszClassName = LIGHTING_STUDIO_CLASS;
     wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
     wc.hbrBackground = nullptr; // Direct2D paints client area
@@ -129,7 +135,7 @@ bool LightingStudioWindow::Initialize(HINSTANCE hInstance, settings::LightingCon
     m_hWnd = CreateWindowExW(
         exStyle,
         LIGHTING_STUDIO_CLASS,
-        L"Lighting Studio",
+        L"Halo Lighting Studio",
         style,
         CW_USEDEFAULT, CW_USEDEFAULT,
         static_cast<int>(DESIGN_WIDTH), static_cast<int>(DESIGN_HEIGHT),
@@ -137,6 +143,15 @@ bool LightingStudioWindow::Initialize(HINSTANCE hInstance, settings::LightingCon
     );
 
     if (!m_hWnd) return false;
+
+    if (hIconBig)
+    {
+        SendMessageW(m_hWnd, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(hIconBig));
+    }
+    if (hIconSm)
+    {
+        SendMessageW(m_hWnd, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(hIconSm));
+    }
 
     // Determine actual DPI for the newly created window on its active monitor
     UINT dpi = GetWindowDpi(m_hWnd);
