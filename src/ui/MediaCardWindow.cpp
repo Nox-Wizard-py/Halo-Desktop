@@ -1,4 +1,5 @@
 #include "MediaCardWindow.hpp"
+#include "resource.h"
 #include <dwmapi.h>
 #include <iostream>
 #include <algorithm>
@@ -137,13 +138,18 @@ bool MediaCardWindow::Initialize(HINSTANCE hInstance, std::shared_ptr<media::Med
     m_hInstance = hInstance;
     m_watcher = std::move(watcher);
 
-    const wchar_t CLASS_NAME[] = L"LumnMediaCardClass";
+    const wchar_t CLASS_NAME[] = L"HaloMediaCardClass";
+
+    HICON hIconBig = LoadIconW(hInstance, MAKEINTRESOURCEW(IDI_APP_ICON));
+    HICON hIconSm = static_cast<HICON>(LoadImageW(hInstance, MAKEINTRESOURCEW(IDI_APP_ICON), IMAGE_ICON, GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), LR_DEFAULTCOLOR));
 
     WNDCLASSEXW wc = {};
     wc.cbSize = sizeof(WNDCLASSEXW);
     wc.style = CS_HREDRAW | CS_VREDRAW;
     wc.lpfnWndProc = WindowProc;
     wc.hInstance = hInstance;
+    wc.hIcon = hIconBig;
+    wc.hIconSm = hIconSm;
     wc.lpszClassName = CLASS_NAME;
     wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
 
@@ -166,7 +172,7 @@ bool MediaCardWindow::Initialize(HINSTANCE hInstance, std::shared_ptr<media::Med
     m_hWnd = CreateWindowExW(
         exStyle,
         CLASS_NAME,
-        L"Lumn Media Card",
+        L"Halo Media Card",
         style,
         posX,
         posY,
@@ -181,6 +187,15 @@ bool MediaCardWindow::Initialize(HINSTANCE hInstance, std::shared_ptr<media::Med
     if (!m_hWnd)
     {
         return false;
+    }
+
+    if (hIconBig)
+    {
+        SendMessageW(m_hWnd, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(hIconBig));
+    }
+    if (hIconSm)
+    {
+        SendMessageW(m_hWnd, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(hIconSm));
     }
 
     // Disable DWM window frame rounding and disable system window border
@@ -200,6 +215,7 @@ bool MediaCardWindow::Initialize(HINSTANCE hInstance, std::shared_ptr<media::Med
 
     // Register Explorer taskbar restart notification
     m_wmTaskbarCreated = RegisterWindowMessageW(L"TaskbarCreated");
+    m_wmActivateInstance = RegisterWindowMessageW(L"HaloDesktop_ActivateInstance_9F8D3B");
 
     // Enable native dark mode for popup menus
     EnableDarkModeForMenu(m_hWnd);
@@ -237,7 +253,22 @@ bool MediaCardWindow::InitializeTray()
         return true;
     }
 
-    m_trayIcon = CreateHaloTrayIcon();
+    m_trayIcon = static_cast<HICON>(LoadImageW(
+        m_hInstance,
+        MAKEINTRESOURCEW(IDI_TRAY_ICON),
+        IMAGE_ICON,
+        GetSystemMetrics(SM_CXSMICON),
+        GetSystemMetrics(SM_CYSMICON),
+        LR_DEFAULTCOLOR
+    ));
+    if (!m_trayIcon)
+    {
+        m_trayIcon = LoadIconW(m_hInstance, MAKEINTRESOURCEW(IDI_APP_ICON));
+    }
+    if (!m_trayIcon)
+    {
+        m_trayIcon = CreateHaloTrayIcon();
+    }
 
     m_nid = {};
     m_nid.cbSize = sizeof(NOTIFYICONDATAW);
@@ -296,6 +327,11 @@ void MediaCardWindow::ShowContextMenu()
     std::wstring toggleLabel = m_visible ? L"Hide Media Card" : L"Show Media Card";
     AppendMenuW(hMenu, MF_STRING, ID_TRAY_TOGGLE_HALO, toggleLabel.c_str());
     SetMenuDefaultItem(hMenu, ID_TRAY_TOGGLE_HALO, FALSE); // Bold primary entry
+
+    // Dynamic Show/Hide Plasma Lighting label
+    bool isPlasmaActive = m_plasmaVisibleChecker ? m_plasmaVisibleChecker() : false;
+    std::wstring plasmaLabel = isPlasmaActive ? L"Hide Plasma Lighting" : L"Show Plasma Lighting";
+    AppendMenuW(hMenu, MF_STRING, ID_TRAY_TOGGLE_PLASMA, plasmaLabel.c_str());
 
     AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
 
@@ -551,6 +587,14 @@ LRESULT MediaCardWindow::HandleMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPAR
     {
     case WM_NCHITTEST:
         return HTCLIENT;
+
+    case WM_KEYDOWN:
+        if (wParam == VK_ESCAPE)
+        {
+            Hide();
+            return 0;
+        }
+        break;
 
     case WM_SETCURSOR:
         if (m_hoveredElement == CardInteractiveElement::ProgressBar ||
@@ -832,11 +876,19 @@ LRESULT MediaCardWindow::HandleMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPAR
                 L"Hotkeys:\n"
                 L"• Ctrl+Shift+M: Toggle Media Card\n"
                 L"• Ctrl+Shift+G: Toggle Liquid Glass Mode\n"
-                L"• ESC / Ctrl+Shift+Q: Exit Application\n\n"
+                L"• ESC: Dismiss Active Interface\n"
+                L"• Ctrl+Shift+Q: Exit Application\n\n"
                 L"Start with Windows can be toggled directly from this tray menu.",
                 L"Halo Desktop",
                 MB_OK | MB_ICONINFORMATION
             );
+            return 0;
+
+        case ID_TRAY_TOGGLE_PLASMA:
+            if (m_onTogglePlasma)
+            {
+                m_onTogglePlasma();
+            }
             return 0;
 
         case ID_TRAY_LIGHTING_STUDIO:
@@ -892,6 +944,13 @@ LRESULT MediaCardWindow::HandleMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPAR
         {
             Shell_NotifyIconW(NIM_ADD, &m_nid);
         }
+        return 0;
+    }
+
+    if (uMsg == m_wmActivateInstance && m_wmActivateInstance != 0)
+    {
+        Show();
+        SetForegroundWindow(m_hWnd);
         return 0;
     }
 

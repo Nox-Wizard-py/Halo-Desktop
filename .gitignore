@@ -76,7 +76,6 @@ scratch/Lumn_arm64
 scratch/Lumn_x86_64
 
 # Local research and agent artifacts
-/tests/
 /scratch/
 /reports/
 /extracted/

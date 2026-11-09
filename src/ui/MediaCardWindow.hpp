@@ -73,12 +73,15 @@ public:
         ID_TRAY_MATERIAL_SOLID  = 2013,
         ID_TRAY_MATERIAL_LIQUID_GLASS = 2014,
         ID_TRAY_MATERIAL_GLASSMORPHISM = 2015,
+        ID_TRAY_TOGGLE_PLASMA   = 2016,
         ID_TRAY_STARTUP         = 2006,
         ID_TRAY_ABOUT           = 2007,
         ID_TRAY_QUIT            = 2008
     };
 
     void SetOnOpenLightingStudio(std::function<void()> callback) { m_onOpenLightingStudio = std::move(callback); }
+    void SetOnTogglePlasma(std::function<void()> callback) { m_onTogglePlasma = std::move(callback); }
+    void SetPlasmaVisibleChecker(std::function<bool()> callback) { m_plasmaVisibleChecker = std::move(callback); }
     void SetOnAODModeChanged(std::function<void(settings::AODMode)> callback) { m_onAODModeChanged = std::move(callback); }
     void SetAODMode(settings::AODMode mode) noexcept { m_aodMode = mode; }
     settings::AODMode GetAODMode() const noexcept { return m_aodMode; }
@@ -127,6 +130,9 @@ private:
     std::chrono::steady_clock::time_point m_optimisticSeekTimestamp{};
 
     std::function<void()> m_onOpenLightingStudio;
+    std::function<void()> m_onTogglePlasma;
+    std::function<bool()> m_plasmaVisibleChecker;
+    UINT m_wmActivateInstance = 0;
     settings::AODMode m_aodMode = settings::AODMode::None;
     std::function<void(settings::AODMode)> m_onAODModeChanged;
     std::function<void(settings::CardMaterial)> m_onMaterialChanged;
