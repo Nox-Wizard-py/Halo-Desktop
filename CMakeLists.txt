@@ -45,6 +45,17 @@ set(SOURCES
     resources/halo.rc
 )
 
+# Runtime shaders are compiled dynamically at runtime via D3DCompileFromFile.
+# Prevent MSBuild Visual Studio generator from attempting build-time FXCompile (error X3501: 'main': entrypoint not found).
+set_source_files_properties(
+    src/render/shaders/plasmaRim.hlsl
+    src/render/shaders/liquidGlass.hlsl
+    src/render/shaders/glassmorphism.hlsl
+    PROPERTIES
+        HEADER_FILE_ONLY TRUE
+        VS_TOOL_OVERRIDE "None"
+)
+
 # Portable C++/WinRT Windows SDK include directory discovery
 if (NOT WINRT_CPPWINRT_INCLUDE_DIR)
     # 1. Environment variables set by Visual Studio developer command prompt / vcvars
