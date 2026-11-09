@@ -334,8 +334,10 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, PWSTR /*pC
     {
         if (!window.ProcessMessages())
         {
+
             logFile << "[Halo] ProcessMessages returned false (WM_QUIT), exiting loop." << std::endl;
             appRunning = false;
+            logFile << "[Halo] ProcessMessages returned false, exiting loop." << std::endl;
             break;
         }
 
