@@ -41,7 +41,13 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, PWSTR /*pC
     if (GetLastError() == ERROR_ALREADY_EXISTS)
     {
         // An active instance is already running; signal it to reveal itself and exit cleanly
-        PostMessageW(HWND_BROADCAST, wmActivateInstance, 0, 0);
+        // Only broadcast activation if this launch was not requested to be silent/background
+        bool isSilentSecondary = (wcsstr(GetCommandLineW(), L"--background") != nullptr ||
+                                  wcsstr(GetCommandLineW(), L"-b") != nullptr);
+        if (!isSilentSecondary)
+        {
+            PostMessageW(HWND_BROADCAST, wmActivateInstance, 0, 0);
+        }
         if (hSingleInstanceMutex)
         {
             CloseHandle(hSingleInstanceMutex);
@@ -76,6 +82,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, PWSTR /*pC
     bool showCard = true; // Phase 4A Floating Media Card enabled by default
     bool useLiquidGlass = true; // Phase 4B.1 Liquid Glass prototype enabled by default
     int forcedCorner = -1; // -1 = Random (normal operation), 0..3 = Deterministic corner override
+    bool backgroundMode = false;
     lumn::settings::AODMode cliAodMode = lumn::settings::AODMode::None;
 
     int argc = 0;
@@ -97,6 +104,11 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, PWSTR /*pC
             {
                 testExitAfter = std::stof(argv[++i]);
                 logFile << "[Halo] Parsed testExitAfter = " << testExitAfter << "\n";
+            }
+            else if (arg == L"--background" || arg == L"-b")
+            {
+                backgroundMode = true;
+                logFile << "[Halo] Silent background startup mode enabled.\n";
             }
             else if (arg == L"--corner-radius" && i + 1 < argc)
             {
@@ -140,6 +152,10 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, PWSTR /*pC
         }
         LocalFree(argv);
     }
+    if (backgroundMode)
+    {
+        showCard = false;
+    }
     logFile.flush();
 
     lumn::platform::Window window;
@@ -160,10 +176,10 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, PWSTR /*pC
     renderer.SetThickness(lightingConfig.thickness);
     renderer.SetGlowMultiplier(lightingConfig.glowIntensity);
 
-    logFile << "[Halo] Initializing window..." << std::endl;
+    logFile << "[Halo] Initializing window (startVisible=" << (!backgroundMode ? "true" : "false") << ")..." << std::endl;
     bool initWindow = window.Initialize(hInstance, [&renderer](uint32_t width, uint32_t height) {
         renderer.Resize(width, height);
-    });
+    }, /*startVisible=*/!backgroundMode);
 
     logFile << "[Halo] window.Initialize returned: " << initWindow << std::endl;
     if (!initWindow)
@@ -309,6 +325,15 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, PWSTR /*pC
         return window.IsVisible();
     });
 
+    // Single-instance manual activation: when another instance launches normally, reveal both Media Card and Plasma Rim
+    mediaCard.SetOnActivateInstance([&window, &renderer, forcedCorner]() {
+        if (!window.IsVisible())
+        {
+            window.Show();
+            renderer.TriggerActivationAnimation(forcedCorner);
+        }
+    });
+
     if (cliAodMode != lumn::settings::AODMode::None)
     {
         updateAODMode(cliAodMode);
@@ -319,8 +344,11 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, PWSTR /*pC
     QueryPerformanceFrequency(&frequency);
     QueryPerformanceCounter(&startTime);
 
-    // Trigger initial activation reveal animation right as render loop begins
-    renderer.TriggerActivationAnimation(forcedCorner);
+    // Trigger initial activation reveal animation right as render loop begins (unless launched silently in background)
+    if (!backgroundMode)
+    {
+        renderer.TriggerActivationAnimation(forcedCorner);
+    }
 
     // Animation & message loop
     logFile << "[Halo] Entering animation loop. IsRunning=" << window.IsRunning() << " testExitAfter=" << testExitAfter << std::endl;
@@ -334,10 +362,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, PWSTR /*pC
     {
         if (!window.ProcessMessages())
         {
-
             logFile << "[Halo] ProcessMessages returned false (WM_QUIT), exiting loop." << std::endl;
             appRunning = false;
-            logFile << "[Halo] ProcessMessages returned false, exiting loop." << std::endl;
             break;
         }
 

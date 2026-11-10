@@ -402,14 +402,32 @@ bool MediaCardWindow::IsStartupEnabled() const
     HKEY hKey = nullptr;
     if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Run", 0, KEY_READ, &hKey) == ERROR_SUCCESS)
     {
-        wchar_t buffer[MAX_PATH] = {};
+        wchar_t buffer[MAX_PATH * 2] = {};
         DWORD bufferSize = sizeof(buffer);
         DWORD type = 0;
         LSTATUS status = RegQueryValueExW(hKey, L"HaloDesktop", nullptr, &type, reinterpret_cast<LPBYTE>(buffer), &bufferSize);
         RegCloseKey(hKey);
-        return (status == ERROR_SUCCESS);
+        return (status == ERROR_SUCCESS && (type == REG_SZ || type == REG_EXPAND_SZ));
     }
     return false;
+}
+
+std::wstring MediaCardWindow::GetStartupCommand() const
+{
+    HKEY hKey = nullptr;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Run", 0, KEY_READ, &hKey) == ERROR_SUCCESS)
+    {
+        wchar_t buffer[MAX_PATH * 2] = {};
+        DWORD bufferSize = sizeof(buffer);
+        DWORD type = 0;
+        LSTATUS status = RegQueryValueExW(hKey, L"HaloDesktop", nullptr, &type, reinterpret_cast<LPBYTE>(buffer), &bufferSize);
+        RegCloseKey(hKey);
+        if (status == ERROR_SUCCESS && (type == REG_SZ || type == REG_EXPAND_SZ))
+        {
+            return std::wstring(buffer);
+        }
+    }
+    return L"";
 }
 
 bool MediaCardWindow::SetStartupEnabled(bool enable)
@@ -422,14 +440,14 @@ bool MediaCardWindow::SetStartupEnabled(bool enable)
         {
             wchar_t exePath[MAX_PATH] = {};
             GetModuleFileNameW(nullptr, exePath, MAX_PATH);
-            std::wstring quotedPath = L"\"" + std::wstring(exePath) + L"\"";
+            std::wstring command = L"\"" + std::wstring(exePath) + L"\" --background";
             status = RegSetValueExW(
                 hKey,
                 L"HaloDesktop",
                 0,
                 REG_SZ,
-                reinterpret_cast<const BYTE*>(quotedPath.c_str()),
-                static_cast<DWORD>((quotedPath.length() + 1) * sizeof(wchar_t))
+                reinterpret_cast<const BYTE*>(command.c_str()),
+                static_cast<DWORD>((command.length() + 1) * sizeof(wchar_t))
             );
         }
         else
@@ -951,6 +969,10 @@ LRESULT MediaCardWindow::HandleMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPAR
     {
         Show();
         SetForegroundWindow(m_hWnd);
+        if (m_onActivateInstance)
+        {
+            m_onActivateInstance();
+        }
         return 0;
     }
 

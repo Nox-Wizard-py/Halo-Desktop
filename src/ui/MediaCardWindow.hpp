@@ -89,6 +89,8 @@ public:
 
     bool IsStartupEnabled() const;
     bool SetStartupEnabled(bool enable);
+    std::wstring GetStartupCommand() const;
+    void SetOnActivateInstance(std::function<void()> callback) { m_onActivateInstance = std::move(callback); }
 
 private:
     static LRESULT CALLBACK WindowProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
@@ -132,6 +134,7 @@ private:
     std::function<void()> m_onOpenLightingStudio;
     std::function<void()> m_onTogglePlasma;
     std::function<bool()> m_plasmaVisibleChecker;
+    std::function<void()> m_onActivateInstance;
     UINT m_wmActivateInstance = 0;
     settings::AODMode m_aodMode = settings::AODMode::None;
     std::function<void(settings::AODMode)> m_onAODModeChanged;

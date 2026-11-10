@@ -167,20 +167,23 @@ float4 PSMain(VS_OUTPUT input) : SV_Target
     // Parameterize active illuminated span from trailing tail to leading head [0.0, 1.0]
     float s = saturate((cyclicDiff + activeHalfSpan) / (2.0f * activeHalfSpan));
 
+    // Dynamic balance modulation of palette transition knot
+    float splitMid = lerp(0.45f, 0.55f, Balance);
+
     float3 artworkCol;
-    if (s < 0.333f)
+    if (s < 0.35f)
     {
-        float tSub = smoothstep(0.0f, 0.333f, s);
+        float tSub = smoothstep(0.08f, 0.35f, s);
         artworkCol = lerp(DeepColor.rgb, Color2.rgb, tSub);
     }
-    else if (s < 0.666f)
+    else if (s < splitMid + 0.15f)
     {
-        float tSub = smoothstep(0.333f, 0.666f, s);
+        float tSub = smoothstep(0.35f, splitMid + 0.15f, s);
         artworkCol = lerp(Color2.rgb, HotColor.rgb, tSub);
     }
     else
     {
-        float tSub = smoothstep(0.666f, 1.0f, s);
+        float tSub = smoothstep(splitMid + 0.15f, 0.92f, s);
         artworkCol = lerp(HotColor.rgb, Color3.rgb, tSub);
     }
 
@@ -193,7 +196,7 @@ float4 PSMain(VS_OUTPUT input) : SV_Target
     // 10. Soft White Luminous Highlight at Wave Crest (Centered at selected corner!)
     float angularCore = saturate(1.0f - segDist / 0.09f);
     float depthCore = saturate(1.0f - edgeDist / max(reach * 0.45f, 1.0f));
-    float whiteIntensity = angularCore * depthCore * depthCore * 0.75f;
+    float whiteIntensity = angularCore * depthCore * depthCore * 0.40f;
     col = lerp(col, float3(1.0f, 1.0f, 1.0f), whiteIntensity);
 
     // Add incandescent liquid meniscus tip during reveal

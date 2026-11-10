@@ -26,7 +26,7 @@ public:
     Window(const Window&) = delete;
     Window& operator=(const Window&) = delete;
 
-    bool Initialize(HINSTANCE hInstance, ResizeCallback onResize);
+    bool Initialize(HINSTANCE hInstance, ResizeCallback onResize, bool startVisible = true);
     void SetOnEscape(EscapeCallback onEscape) { m_onEscape = std::move(onEscape); }
     void Shutdown();
 

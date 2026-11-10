@@ -22,7 +22,7 @@ Window::~Window()
     Shutdown();
 }
 
-bool Window::Initialize(HINSTANCE hInstance, ResizeCallback onResize)
+bool Window::Initialize(HINSTANCE hInstance, ResizeCallback onResize, bool startVisible)
 {
     m_hInstance = hInstance;
     m_onResize = std::move(onResize);
@@ -105,21 +105,23 @@ bool Window::Initialize(HINSTANCE hInstance, ResizeCallback onResize)
 
     // 5. Register Global Hotkeys for Clean Exit
     // Since WS_EX_TRANSPARENT and WS_EX_NOACTIVATE prevent keyboard focus,
-    // we register ESC and Ctrl+Shift+Q as system hotkeys to close the overlay cleanly.
-    if (!RegisterHotKey(m_hwnd, HOTKEY_ID_ESC, MOD_NOREPEAT, VK_ESCAPE))
-    {
-        std::cerr << "[Halo] Warning: Could not register ESC hotkey. Trying fallback hotkey.\n";
-    }
-
+    // we register Ctrl+Shift+Q as system hotkey to close the application cleanly.
     RegisterHotKey(m_hwnd, HOTKEY_ID_CTRL_SHIFT_Q, MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT, 'Q');
 
-    // 6. Display the Window (without activating or taking focus)
-    ShowWindow(m_hwnd, SW_SHOWNOACTIVATE);
-    UpdateWindow(m_hwnd);
+    // 6. Display the Window (only if startVisible is true)
+    if (startVisible)
+    {
+        if (!RegisterHotKey(m_hwnd, HOTKEY_ID_ESC, MOD_NOREPEAT, VK_ESCAPE))
+        {
+            std::cerr << "[Halo] Warning: Could not register ESC hotkey. Trying fallback hotkey.\n";
+        }
+        ShowWindow(m_hwnd, SW_SHOWNOACTIVATE);
+        UpdateWindow(m_hwnd);
+    }
 
     m_running = true;
     std::cout << "[Halo] Native overlay window created (" << m_width << "x" << m_height 
-              << " at " << posX << "," << posY << ")\n";
+              << " at " << posX << "," << posY << ") [startVisible=" << (startVisible ? "true" : "false") << "]\n";
     std::cout << "[Halo] Press ESC or Ctrl+Shift+Q at any time to exit.\n";
 
     return true;
