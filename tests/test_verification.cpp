@@ -292,6 +292,17 @@ void TestTrayAndMinimizeBehavior()
     if (!setSuccess) std::abort();
     if (cardWindow.IsStartupEnabled() == initialStartup) std::abort();
 
+    // Verify command formatting and --background argument when enabled
+    cardWindow.SetStartupEnabled(true);
+    if (!cardWindow.IsStartupEnabled()) std::abort();
+    std::wstring cmd = cardWindow.GetStartupCommand();
+    if (cmd.empty() || cmd.front() != L'\"') std::abort();
+    if (cmd.find(L"--background") == std::wstring::npos) std::abort();
+
+    cardWindow.SetStartupEnabled(false);
+    if (cardWindow.IsStartupEnabled()) std::abort();
+    if (!cardWindow.GetStartupCommand().empty()) std::abort();
+
     // Restore original startup state
     cardWindow.SetStartupEnabled(initialStartup);
     if (cardWindow.IsStartupEnabled() != initialStartup) std::abort();
@@ -1380,6 +1391,95 @@ void TestSingleInstanceNamedMutex()
     std::cout << "  -> PASSED: Single-instance named mutex locking and subsequent release verified.\n";
 }
 
+void TestBackgroundStartupMode()
+{
+    std::cout << "[Test 16] Silent Background Startup Mode (--background) & Activation Verification...\n";
+
+    HINSTANCE hInstance = GetModuleHandleW(nullptr);
+
+    // 1. Validate startVisible = false initializes Window silently with 0% visible footprint
+    lumn::platform::Window window;
+    bool winInit = window.Initialize(hInstance, nullptr, /*startVisible=*/false);
+    if (!winInit) std::abort();
+    if (window.IsVisible()) std::abort(); // Must NOT be visible
+    if (!window.IsRunning()) std::abort(); // Application message loop running
+
+    // 2. Validate MediaCardWindow initializes silently without showing
+    auto watcher = std::make_shared<lumn::media::MediaSessionWatcher>();
+    MediaCardWindow cardWindow;
+    bool cardInit = cardWindow.Initialize(hInstance, watcher);
+    if (!cardInit) std::abort();
+    if (cardWindow.IsVisible()) std::abort(); // Must NOT be visible
+
+    // 3. Confirm background services and tray operate while hidden
+    bool origStartup = cardWindow.IsStartupEnabled();
+    cardWindow.SetStartupEnabled(true);
+    if (!cardWindow.IsStartupEnabled()) std::abort();
+    std::wstring startupCmd = cardWindow.GetStartupCommand();
+    if (startupCmd.empty()) std::abort();
+    if (startupCmd.front() != L'\"') std::abort();
+    if (startupCmd.find(L"--background") == std::wstring::npos) std::abort();
+
+    // 4. Validate manual launch activation IPC callback
+    // When a second instance launches normally, it sends the activation message.
+    // The background instance catches it, shows the card, and invokes m_onActivateInstance to show the window.
+    bool activationCallbackInvoked = false;
+    cardWindow.SetOnActivateInstance([&]() {
+        activationCallbackInvoked = true;
+        window.Show();
+    });
+
+    UINT wmActivate = RegisterWindowMessageW(L"HaloDesktop_ActivateInstance_9F8D3B");
+    if (wmActivate == 0) std::abort();
+
+    // Send activation message to card window
+    SendMessageW(cardWindow.GetHandle(), wmActivate, 0, 0);
+
+    // Both card and window should now be visible
+    if (!activationCallbackInvoked) std::abort();
+    if (!cardWindow.IsVisible()) std::abort();
+    if (!window.IsVisible()) std::abort();
+
+    // 5. Test hiding again (ESC dismissal simulation)
+    window.Hide();
+    cardWindow.Hide();
+    if (window.IsVisible()) std::abort();
+    if (cardWindow.IsVisible()) std::abort();
+
+    // 6. Test tray controls can open hidden interfaces manually
+    cardWindow.ToggleVisibility();
+    if (!cardWindow.IsVisible()) std::abort();
+    window.ToggleVisibility();
+    if (!window.IsVisible()) std::abort();
+
+    // 7. Test disabling Start with Windows cleanly removes registration
+    cardWindow.SetStartupEnabled(false);
+    if (cardWindow.IsStartupEnabled()) std::abort();
+    if (!cardWindow.GetStartupCommand().empty()) std::abort();
+
+    // Restore original startup state
+    cardWindow.SetStartupEnabled(origStartup);
+
+    // 8. Test explicit Quit terminates the background process
+    SendMessageW(cardWindow.GetHandle(), WM_COMMAND, MediaCardWindow::ID_TRAY_QUIT, 0);
+    bool quitReceived = false;
+    MSG msg = {};
+    while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE))
+    {
+        if (msg.message == WM_QUIT)
+        {
+            quitReceived = true;
+            break;
+        }
+    }
+    if (!quitReceived) std::abort();
+
+    cardWindow.Shutdown();
+    window.Shutdown();
+
+    std::cout << "  -> PASSED: Silent background startup, IPC activation reveal, and clean shutdown verified.\n\n";
+}
+
 int main()
 {
     std::cout << std::unitbuf;
@@ -1418,6 +1518,7 @@ int main()
     TestGlassmorphismMediaCardMaterial();
     TestBackgroundLifecycleAndEscDismissal();
     TestSingleInstanceNamedMutex();
+    TestBackgroundStartupMode();
 
     std::cout << "ALL AUTOMATED VERIFICATION TESTS PASSED SUCCESSFULLY!\n";
     return 0;

@@ -1,7 +1,8 @@
 #include "ColorExtractor.hpp"
 #include <cmath>
 #include <algorithm>
-
+#include <numeric>
+#include <array>
 namespace lumn::media
 {
 
@@ -359,6 +360,277 @@ RimPalette ColorExtractor::ExtractFromRGBA48x48(const uint8_t* rgbaPixels)
     result.deep[3] = 1.0f;
     result.hasArtwork = true;
 
+    return result;
+}
+
+// =============================================================================
+// Volume-Weighted Median Cut Quantization (VWMC)
+// =============================================================================
+// Design goals
+//   - Strictly volume-driven: the box chosen for each split is always the one
+//     with the highest raw pixel count — no saturation/brightness weighting.
+//   - Absolutely neutral: dark, grey, sepia, and muted pixels are treated
+//     identically to vivid ones.  Nothing is discarded before the split phase.
+//   - Zero allocation in the hot path: a single std::vector<Pixel8> is
+//     pre-allocated once per call and reused for all in-place partition steps.
+//   - Boxes are stored in a small fixed-size std::array<Box, 4>; no heap
+//     growth after the initial pixel gather.
+//
+// Complexity:
+//   For N = 48 × 48 = 2 304 pixels and 3 split rounds (1 → 2 → 4 boxes):
+//   Each split is O(N log N) for the nth_element + sort, so total is
+//   O(3 N log N) ≈ 33 000 comparisons — negligible on a track-change event.
+// =============================================================================
+
+// ---------------------------------------------------------------------------
+// Private helpers
+// ---------------------------------------------------------------------------
+
+uint8_t ColorExtractor::Box::longestSpan() const noexcept
+{
+    // Manual three-way max to avoid the initializer_list overload of std::max,
+    // which conflicts with the Win32 max() macro in Windows-aware translation units.
+    uint8_t dr = rMax - rMin;
+    uint8_t dg = gMax - gMin;
+    uint8_t db = bMax - bMin;
+    uint8_t m  = dr > dg ? dr : dg;
+    return m > db ? m : db;
+}
+
+void ColorExtractor::RecomputeBounds(Box& box, std::vector<Pixel8>& pool) noexcept
+{
+    // Walk the pixel slice and tighten the axis-aligned bounding box.
+    uint8_t rMin = 255, rMax = 0;
+    uint8_t gMin = 255, gMax = 0;
+    uint8_t bMin = 255, bMax = 0;
+
+    for (uint32_t i = box.begin; i < box.end; ++i)
+    {
+        const Pixel8& p = pool[i];
+        if (p.r < rMin) rMin = p.r;  if (p.r > rMax) rMax = p.r;
+        if (p.g < gMin) gMin = p.g;  if (p.g > gMax) gMax = p.g;
+        if (p.b < bMin) bMin = p.b;  if (p.b > bMax) bMax = p.b;
+    }
+
+    box.rMin = rMin;  box.rMax = rMax;
+    box.gMin = gMin;  box.gMax = gMax;
+    box.bMin = bMin;  box.bMax = bMax;
+}
+
+ColorExtractor::Box ColorExtractor::SplitBox(Box& box, std::vector<Pixel8>& pool)
+{
+    // -------------------------------------------------------------------------
+    // 1. Identify the longest color axis.
+    // -------------------------------------------------------------------------
+    const uint8_t dr = box.rMax - box.rMin;
+    const uint8_t dg = box.gMax - box.gMin;
+    const uint8_t db = box.bMax - box.bMin;
+
+    // -------------------------------------------------------------------------
+    // 2. Sort the box's pixel slice along the dominant axis.
+    //    std::sort on 2304 uint8 values takes ~15 µs on a modern CPU — fine for
+    //    a track-change event.  We use a plain lambda comparator to let the
+    //    compiler inline the per-axis branch at compile time via if-constexpr
+    //    simulation at runtime.
+    // -------------------------------------------------------------------------
+    auto* begin = pool.data() + box.begin;
+    auto* end   = pool.data() + box.end;
+
+    if (dr >= dg && dr >= db)
+    {
+        std::sort(begin, end, [](const Pixel8& a, const Pixel8& b) noexcept {
+            return a.r < b.r;
+        });
+    }
+    else if (dg >= dr && dg >= db)
+    {
+        std::sort(begin, end, [](const Pixel8& a, const Pixel8& b) noexcept {
+            return a.g < b.g;
+        });
+    }
+    else
+    {
+        std::sort(begin, end, [](const Pixel8& a, const Pixel8& b) noexcept {
+            return a.b < b.b;
+        });
+    }
+
+    // -------------------------------------------------------------------------
+    // 3. Split at the median pixel (integer midpoint of the slice).
+    // -------------------------------------------------------------------------
+    const uint32_t mid = box.begin + box.count() / 2;
+
+    // Upper half → new box; lower half stays in `box` (mutated in place).
+    Box upper;
+    upper.begin = mid;
+    upper.end   = box.end;
+    box.end     = mid;
+
+    // -------------------------------------------------------------------------
+    // 4. Recompute tight bounds for both halves.
+    // -------------------------------------------------------------------------
+    RecomputeBounds(box, pool);
+    RecomputeBounds(upper, pool);
+
+    return upper;
+}
+
+// ---------------------------------------------------------------------------
+// Public API
+// ---------------------------------------------------------------------------
+
+RimPalette ColorExtractor::ExtractMedianCut(const uint8_t* rgbaPixels)
+{
+    RimPalette result{};
+    if (!rgbaPixels)
+    {
+        return result;
+    }
+
+    // -------------------------------------------------------------------------
+    // Phase 1 — Gather pixels
+    // -------------------------------------------------------------------------
+    // Pre-allocate for the maximum possible count (all pixels fully opaque) to
+    // avoid any reallocation inside the loop.
+    constexpr uint32_t MAX_PIXELS = PIXEL_COUNT; // 2 304
+    std::vector<Pixel8> pool;
+    pool.reserve(MAX_PIXELS);
+
+    for (uint32_t i = 0; i < MAX_PIXELS * 4; i += 4)
+    {
+        // Discard fully-transparent pixels only; keep everything >= 50% opaque.
+        if (rgbaPixels[i + 3] < 128u)
+        {
+            continue;
+        }
+        pool.push_back({ rgbaPixels[i], rgbaPixels[i + 1], rgbaPixels[i + 2] });
+    }
+
+    if (pool.empty())
+    {
+        return result;
+    }
+
+    // -------------------------------------------------------------------------
+    // Phase 2 — Initialise the single root box spanning the entire pool.
+    // -------------------------------------------------------------------------
+    Box root;
+    root.begin = 0;
+    root.end   = static_cast<uint32_t>(pool.size());
+    RecomputeBounds(root, pool);
+
+    // boxes is a fixed-capacity container: we start with 1 and grow to 4.
+    // Using std::array avoids heap allocation; activeCount tracks logical size.
+    std::array<Box, 4> boxes;
+    boxes[0]         = root;
+    uint32_t activeCount = 1;
+
+    // -------------------------------------------------------------------------
+    // Phase 3 — Volume-strict split loop (3 iterations: 1→2→3→4 boxes)
+    // -------------------------------------------------------------------------
+    while (activeCount < 4)
+    {
+        // --- Select the box with the most pixels (volume-only criterion). ---
+        uint32_t targetIdx = 0;
+        uint32_t maxCount  = 0;
+        for (uint32_t i = 0; i < activeCount; ++i)
+        {
+            // A box with only 1 pixel cannot be split; skip it.
+            if (boxes[i].count() > maxCount && boxes[i].count() > 1)
+            {
+                maxCount  = boxes[i].count();
+                targetIdx = i;
+            }
+        }
+
+        // If every box has ≤ 1 pixel we cannot split further; break early.
+        if (maxCount <= 1)
+        {
+            break;
+        }
+
+        // --- Split the chosen box. ------------------------------------------
+        // SplitBox mutates boxes[targetIdx] (lower half) and returns the upper
+        // half, which we append to the array.
+        boxes[activeCount] = SplitBox(boxes[targetIdx], pool);
+        ++activeCount;
+    }
+
+    // -------------------------------------------------------------------------
+    // Phase 4 — Compute per-box centroids (arithmetic mean in [0, 255] space).
+    // -------------------------------------------------------------------------
+    // Sort boxes descending by pixel count so slot 0 == most dominant colour.
+    std::sort(boxes.begin(), boxes.begin() + activeCount, [](const Box& a, const Box& b) noexcept {
+        return a.count() > b.count();
+    });
+
+    // For each box, sum R, G, B over all its pixels and divide by count.
+    // Using 64-bit accumulators to prevent overflow for large boxes.
+    struct Centroid { float r, g, b; };
+    std::array<Centroid, 4> centroids{};
+
+    for (uint32_t bi = 0; bi < activeCount; ++bi)
+    {
+        const Box& bx = boxes[bi];
+        uint64_t rSum = 0, gSum = 0, bSum = 0;
+
+        for (uint32_t pi = bx.begin; pi < bx.end; ++pi)
+        {
+            rSum += pool[pi].r;
+            gSum += pool[pi].g;
+            bSum += pool[pi].b;
+        }
+
+        const float inv  = 1.0f / static_cast<float>(bx.count());
+        centroids[bi].r  = static_cast<float>(rSum) * inv / 255.0f;
+        centroids[bi].g  = static_cast<float>(gSum) * inv / 255.0f;
+        centroids[bi].b  = static_cast<float>(bSum) * inv / 255.0f;
+    }
+
+    // -------------------------------------------------------------------------
+    // Phase 5 — Map centroids onto RimPalette slots.
+    // -------------------------------------------------------------------------
+    // Slot assignment (most → least populated):
+    //   hot    ← centroid[0]  (largest box, the single most-present colour mass)
+    //   deep   ← centroid[1]  (second largest; ground foundation tone)
+    //   color2 ← centroid[2]  (third)
+    //   color3 ← centroid[3]  (fourth; smallest dominant region)
+    //
+    // balance is derived from the relative population of the top two boxes,
+    // matching the semantic used by the existing shader pipeline.
+    for (uint32_t bi = 0; bi < activeCount; ++bi)
+    {
+        float* slot = nullptr;
+        switch (bi)
+        {
+        case 0: slot = result.hot;    break;
+        case 1: slot = result.deep;   break;
+        case 2: slot = result.color2; break;
+        case 3: slot = result.color3; break;
+        default: break;
+        }
+        if (slot)
+        {
+            slot[0] = centroids[bi].r;
+            slot[1] = centroids[bi].g;
+            slot[2] = centroids[bi].b;
+            slot[3] = 1.0f;
+        }
+    }
+
+    // If we ended up with fewer than 4 boxes (degenerate tiny image), leave the
+    // unfilled slots at their RimPalette defaults — they are never written above.
+
+    // balance: ratio of box-0 population to (box-0 + box-1), clamped to the
+    // same [0.15, 0.85] range used by the legacy extractor.
+    if (activeCount >= 2)
+    {
+        const float n0 = static_cast<float>(boxes[0].count());
+        const float n1 = static_cast<float>(boxes[1].count());
+        result.balance = std::clamp(n0 / (n0 + n1), 0.15f, 0.85f);
+    }
+
+    result.hasArtwork = true;
     return result;
 }
 
