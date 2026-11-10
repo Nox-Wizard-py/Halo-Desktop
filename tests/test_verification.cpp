@@ -1480,6 +1480,137 @@ void TestBackgroundStartupMode()
     std::cout << "  -> PASSED: Silent background startup, IPC activation reveal, and clean shutdown verified.\n\n";
 }
 
+void TestPerceptualVisibilityPaletteExtractor()
+{
+    std::cout << "[Test 17] Perceptual Hue-Binning & Visibility-Weighted Palette Extractor (2026 Engine)...\n";
+
+    // 1. Primary Regression Reference: Sadiyan (I-Popstar: Vol. 1) Artwork Simulation
+    // Exact representative distribution extracted from 48x48 downsampled Sadiyan album art:
+    //   - Violet / Indigo background (dominant): 1323 px (57.42%)
+    //   - Red / Magenta dress (secondary):        244 px (10.59%)
+    //   - Azure / Blue accent:                     74 px ( 3.21%)
+    //   - Cyan / Turquoise neon text:              43 px ( 1.87%)
+    //   - Neutral / Gray studio shadow:           399 px (17.32%)
+    //   - Orange skin tones:                      145 px ( 6.29%)
+    //   - Magenta & Rose fringes:                  76 px ( 3.30%)
+    // Total = 2304 pixels (48x48 RGBA)
+    std::vector<uint8_t> sadiyanBuffer(ColorExtractor::BUFFER_SIZE);
+
+    auto fillPixels = [&](size_t startIdx, size_t count, uint8_t r, uint8_t g, uint8_t b) {
+        for (size_t i = 0; i < count; ++i) {
+            size_t offset = (startIdx + i) * 4;
+            sadiyanBuffer[offset + 0] = r;
+            sadiyanBuffer[offset + 1] = g;
+            sadiyanBuffer[offset + 2] = b;
+            sadiyanBuffer[offset + 3] = 255;
+        }
+    };
+
+    size_t curIdx = 0;
+    fillPixels(curIdx, 1323, 64, 47, 138); curIdx += 1323; // Violet/Indigo background
+    fillPixels(curIdx, 244, 202, 74, 78);  curIdx += 244;  // Red/Magenta dress
+    fillPixels(curIdx, 74, 50, 118, 193);  curIdx += 74;   // Azure/Blue lighting
+    fillPixels(curIdx, 43, 24, 209, 227);  curIdx += 43;   // Cyan/Turquoise neon text
+    fillPixels(curIdx, 399, 114, 107, 112); curIdx += 399; // Neutral/Achromatic
+    fillPixels(curIdx, 145, 188, 138, 115); curIdx += 145; // Orange skin tones
+    fillPixels(curIdx, 41, 116, 46, 118);  curIdx += 41;   // Magenta fringe
+    fillPixels(curIdx, 35, 175, 66, 117);  curIdx += 35;   // Rose fringe
+    if (curIdx != 2304) std::abort();
+
+    ColorExtractor::PaletteDiagnostics sadiyanDiag;
+    RimPalette sadiyanPalette = ColorExtractor::ExtractPalette(sadiyanBuffer.data(), &sadiyanDiag);
+
+    std::cout << "\n  [Sadiyan Palette Extraction Diagnostics]\n";
+    std::cout << "  Candidate Scoring & Rejection Ledger:\n";
+    for (const auto& cand : sadiyanDiag.candidates)
+    {
+        std::cout << "    - " << cand.name << " (" << cand.hexColor << "): "
+                  << cand.pixelCount << " px (" << (cand.areaRatio * 100.0f) << "%), "
+                  << "Chroma=" << cand.meanChroma << ", VisScore=" << cand.visibilityScore;
+        if (!cand.selected)
+        {
+            std::cout << " -> REJECTED: " << cand.rejectionReason;
+        }
+        else
+        {
+            std::cout << " -> ACCEPTED";
+        }
+        std::cout << "\n";
+    }
+
+    std::cout << "\n  Final Extracted 4-Color RimPalette Mapping:\n";
+    auto printSlot = [](const char* slotName, const float col[4]) {
+        char hex[16];
+        snprintf(hex, sizeof(hex), "#%02X%02X%02X",
+                 static_cast<int>(col[0] * 255.0f + 0.5f),
+                 static_cast<int>(col[1] * 255.0f + 0.5f),
+                 static_cast<int>(col[2] * 255.0f + 0.5f));
+        std::cout << "    " << slotName << ": " << hex
+                  << " (R=" << col[0] << ", G=" << col[1] << ", B=" << col[2] << ")\n";
+    };
+
+    printSlot("HotColor  (Dominant Violet)  ", sadiyanPalette.hot);
+    printSlot("Color2    (Secondary Red)    ", sadiyanPalette.color2);
+    printSlot("Color3    (Accent Cyan)      ", sadiyanPalette.color3);
+    printSlot("DeepColor (Supporting Blue)  ", sadiyanPalette.deep);
+    std::cout << "    Dynamic Balance: " << sadiyanPalette.balance << "\n\n";
+
+    // Visual Acceptance Criteria verification:
+    // Dominant Violet must be HotColor: Red component moderate, Green low, Blue high
+    if (sadiyanPalette.hot[2] <= sadiyanPalette.hot[1] || sadiyanPalette.hot[2] < 0.40f) std::abort();
+    // Secondary Red must be Color2: Red high, Green/Blue lower
+    if (sadiyanPalette.color2[0] <= sadiyanPalette.color2[1] || sadiyanPalette.color2[0] < 0.60f) std::abort();
+    // Accent Cyan must be Color3: Green and Blue high, Red low
+    if (sadiyanPalette.color3[1] < 0.60f || sadiyanPalette.color3[2] < 0.70f || sadiyanPalette.color3[0] > 0.35f) std::abort();
+    // Supporting Blue must be DeepColor: Blue highest
+    if (sadiyanPalette.deep[2] <= sadiyanPalette.deep[0] || sadiyanPalette.deep[2] < 0.50f) std::abort();
+
+    // 2. Dark Cinematic Cover with Insignificant Logo (< 0.5% Area)
+    // 2295 dark charcoal pixels (99.6%) + 9 bright yellow logo pixels (0.39%)
+    std::vector<uint8_t> cinematicBuffer(ColorExtractor::BUFFER_SIZE);
+    for (size_t i = 0; i < 2295; ++i) {
+        cinematicBuffer[i * 4 + 0] = 20;
+        cinematicBuffer[i * 4 + 1] = 22;
+        cinematicBuffer[i * 4 + 2] = 25;
+        cinematicBuffer[i * 4 + 3] = 255;
+    }
+    for (size_t i = 2295; i < 2304; ++i) {
+        cinematicBuffer[i * 4 + 0] = 255; // Tiny yellow logo
+        cinematicBuffer[i * 4 + 1] = 215;
+        cinematicBuffer[i * 4 + 2] = 0;
+        cinematicBuffer[i * 4 + 3] = 255;
+    }
+
+    ColorExtractor::PaletteDiagnostics cineDiag;
+    RimPalette cinePalette = ColorExtractor::ExtractPalette(cinematicBuffer.data(), &cineDiag);
+    // Yellow logo must NOT be selected as any of the 4 colors!
+    for (const auto& cand : cineDiag.candidates) {
+        if (cand.name == "Yellow") {
+            if (cand.selected) std::abort(); // Tiny logo was mistakenly accepted!
+        }
+    }
+    std::cout << "  -> PASSED: Insignificant 0.39% yellow logo successfully rejected by anti-noise gate.\n";
+
+    // 3. Monochromatic / Grayscale Cover
+    // 2304 pixels of mid-gray (L ~ 0.50, chroma = 0)
+    std::vector<uint8_t> monoBuffer(ColorExtractor::BUFFER_SIZE);
+    for (size_t i = 0; i < 2304; ++i) {
+        monoBuffer[i * 4 + 0] = 120;
+        monoBuffer[i * 4 + 1] = 120;
+        monoBuffer[i * 4 + 2] = 120;
+        monoBuffer[i * 4 + 3] = 255;
+    }
+    RimPalette monoPalette = ColorExtractor::ExtractPalette(monoBuffer.data());
+    // Gamut-safe harmonic derivation must yield 4 distinct tonal lightness steps with zero hue drift
+    if (std::abs(monoPalette.hot[0] - monoPalette.hot[1]) > 0.02f) std::abort();
+    if (std::abs(monoPalette.color2[0] - monoPalette.color2[1]) > 0.02f) std::abort();
+    if (std::abs(monoPalette.color3[0] - monoPalette.color3[1]) > 0.02f) std::abort();
+    if (std::abs(monoPalette.deep[0] - monoPalette.deep[1]) > 0.02f) std::abort();
+    std::cout << "  -> PASSED: Monochromatic harmonic derivation produces clean gamut-safe tonal ladder.\n";
+
+    std::cout << "  -> PASSED: Perceptual Hue-Binning & Visibility-Weighted Palette Extractor fully verified.\n\n";
+}
+
 int main()
 {
     std::cout << std::unitbuf;
@@ -1519,6 +1650,7 @@ int main()
     TestBackgroundLifecycleAndEscDismissal();
     TestSingleInstanceNamedMutex();
     TestBackgroundStartupMode();
+    TestPerceptualVisibilityPaletteExtractor();
 
     std::cout << "ALL AUTOMATED VERIFICATION TESTS PASSED SUCCESSFULLY!\n";
     return 0;

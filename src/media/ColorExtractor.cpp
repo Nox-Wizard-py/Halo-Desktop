@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <numeric>
 #include <array>
+#include <string>
+#include <cstdio>
 namespace lumn::media
 {
 
@@ -63,6 +65,43 @@ ColorExtractor::RGB ColorExtractor::OKLabtoRGB(float L, float a, float b) noexce
         linearTosRGB(lg),
         linearTosRGB(lb)
     };
+}
+
+ColorExtractor::RGB ColorExtractor::GamutSafeOKLabtoRGB(float L, float a, float b) noexcept
+{
+    RGB rgb = OKLabtoRGB(L, a, b);
+    if (rgb.r >= 0.0f && rgb.r <= 1.0f &&
+        rgb.g >= 0.0f && rgb.g <= 1.0f &&
+        rgb.b >= 0.0f && rgb.b <= 1.0f)
+    {
+        return rgb;
+    }
+
+    // 5-iteration bisection on chroma multiplier to preserve exact hue and lightness
+    float low = 0.0f;
+    float high = 1.0f;
+    RGB best = OKLabtoRGB(L, 0.0f, 0.0f);
+    best.r = std::clamp(best.r, 0.0f, 1.0f);
+    best.g = std::clamp(best.g, 0.0f, 1.0f);
+    best.b = std::clamp(best.b, 0.0f, 1.0f);
+
+    for (int iter = 0; iter < 5; ++iter)
+    {
+        float mid = (low + high) * 0.5f;
+        RGB test = OKLabtoRGB(L, a * mid, b * mid);
+        if (test.r >= 0.0f && test.r <= 1.0f &&
+            test.g >= 0.0f && test.g <= 1.0f &&
+            test.b >= 0.0f && test.b <= 1.0f)
+        {
+            best = test;
+            low = mid;
+        }
+        else
+        {
+            high = mid;
+        }
+    }
+    return best;
 }
 
 float ColorExtractor::DeltaE(const OKLab& c1, const OKLab& c2) noexcept
@@ -628,6 +667,394 @@ RimPalette ColorExtractor::ExtractMedianCut(const uint8_t* rgbaPixels)
         const float n0 = static_cast<float>(boxes[0].count());
         const float n1 = static_cast<float>(boxes[1].count());
         result.balance = std::clamp(n0 / (n0 + n1), 0.15f, 0.85f);
+    }
+
+    result.hasArtwork = true;
+    return result;
+}
+
+// =============================================================================
+// Perceptual Hue-Binning & Visibility-Weighted Palette Extractor (2026 Engine)
+// =============================================================================
+
+RimPalette ColorExtractor::ExtractPalette(const uint8_t* rgbaPixels, PaletteDiagnostics* outDiag)
+{
+    RimPalette result{};
+    if (!rgbaPixels)
+    {
+        return result;
+    }
+
+    constexpr uint32_t W = DOWNSAMPLE_WIDTH;
+    constexpr uint32_t H = DOWNSAMPLE_HEIGHT;
+    constexpr uint32_t TOTAL_PIXELS = W * H;
+
+    struct Cluster
+    {
+        std::string name;
+        int binIdx = -1;
+        uint32_t count = 0;
+        double rSum = 0.0, gSum = 0.0, bSum = 0.0;
+        double lSum = 0.0, aSum = 0.0, bColSum = 0.0;
+
+        void Add(float r, float g, float b, float L, float oklabA, float oklabB) noexcept
+        {
+            count++;
+            rSum += r; gSum += g; bSum += b;
+            lSum += L; aSum += oklabA; bColSum += oklabB;
+        }
+
+        void MergeFrom(const Cluster& other)
+        {
+            count += other.count;
+            rSum += other.rSum; gSum += other.gSum; bSum += other.bSum;
+            lSum += other.lSum; aSum += other.aSum; bColSum += other.bColSum;
+        }
+
+        [[nodiscard]] RGB CentroidRGB() const noexcept
+        {
+            if (count == 0) return { 0.0f, 0.0f, 0.0f };
+            float inv = 1.0f / static_cast<float>(count);
+            return {
+                std::clamp(static_cast<float>(rSum * inv), 0.0f, 1.0f),
+                std::clamp(static_cast<float>(gSum * inv), 0.0f, 1.0f),
+                std::clamp(static_cast<float>(bSum * inv), 0.0f, 1.0f)
+            };
+        }
+
+        [[nodiscard]] OKLab CentroidOKLab() const noexcept
+        {
+            if (count == 0) return { 0.0f, 0.0f, 0.0f };
+            float inv = 1.0f / static_cast<float>(count);
+            return {
+                static_cast<float>(lSum * inv),
+                static_cast<float>(aSum * inv),
+                static_cast<float>(bColSum * inv)
+            };
+        }
+
+        [[nodiscard]] float Chroma() const noexcept
+        {
+            OKLab ok = CentroidOKLab();
+            return std::sqrt(ok.a * ok.a + ok.b * ok.b);
+        }
+    };
+
+    static const char* const kBinNames[13] = {
+        "Red", "Orange", "Yellow", "Y-Green", "Green", "Spring-G",
+        "Cyan", "Azure", "Blue", "Violet", "Magenta", "Rose", "Neutral"
+    };
+
+    std::vector<Cluster> clusters(13);
+    for (int i = 0; i < 13; ++i)
+    {
+        clusters[i].name = kBinNames[i];
+        clusters[i].binIdx = i;
+    }
+
+    uint32_t totalOpaque = 0;
+    for (uint32_t i = 0; i < TOTAL_PIXELS * 4; i += 4)
+    {
+        if (rgbaPixels[i + 3] < 128u) continue;
+        totalOpaque++;
+
+        float r = rgbaPixels[i + 0] / 255.0f;
+        float g = rgbaPixels[i + 1] / 255.0f;
+        float b = rgbaPixels[i + 2] / 255.0f;
+
+        OKLab ok = RGBtoOKLab(r, g, b);
+        float chroma = std::sqrt(ok.a * ok.a + ok.b * ok.b);
+
+        // A pixel is classified as neutral if chroma < 0.035 in OKLab
+        if (chroma < 0.035f)
+        {
+            clusters[12].Add(r, g, b, ok.L, ok.a, ok.b);
+        }
+        else
+        {
+            HSB hsb = RGBtoHSB(r, g, b);
+            float hDeg = hsb.h * 360.0f;
+            int binIdx = static_cast<int>((hDeg + 15.0f) / 30.0f) % 12;
+            if (binIdx < 0) binIdx += 12;
+            clusters[binIdx].Add(r, g, b, ok.L, ok.a, ok.b);
+        }
+    }
+
+    if (totalOpaque == 0)
+    {
+        return result;
+    }
+
+    // Filter out active clusters
+    std::vector<Cluster> active;
+    for (auto& c : clusters)
+    {
+        if (c.count > 0) active.push_back(std::move(c));
+    }
+
+    // Merge perceptually similar adjacent bins (Requirement B)
+    // Avoid artificial bin boundaries between neighboring chromatic bins (e.g. Blue & Violet in Sadiyan)
+    bool mergedAny = true;
+    while (mergedAny)
+    {
+        mergedAny = false;
+        int bestI = -1, bestJ = -1;
+        float minDist = 999.0f;
+
+        for (size_t i = 0; i < active.size(); ++i)
+        {
+            for (size_t j = i + 1; j < active.size(); ++j)
+            {
+                if (active[i].binIdx < 12 && active[j].binIdx < 12)
+                {
+                    int diff = std::abs(active[i].binIdx - active[j].binIdx);
+                    int circDiff = std::min(diff, 12 - diff);
+                    if (circDiff == 1)
+                    {
+                        float d = DeltaE(active[i].CentroidOKLab(), active[j].CentroidOKLab());
+                        if (d < 0.08f && d < minDist)
+                        {
+                            minDist = d;
+                            bestI = static_cast<int>(i);
+                            bestJ = static_cast<int>(j);
+                        }
+                    }
+                }
+            }
+        }
+
+        if (bestI >= 0 && bestJ >= 0)
+        {
+            active[bestI].name += "+" + active[bestJ].name;
+            active[bestI].MergeFrom(active[bestJ]);
+            active.erase(active.begin() + bestJ);
+            mergedAny = true;
+        }
+    }
+
+    // Candidate scoring and anti-noise gating (Requirements A & D)
+    struct ScoredCandidate
+    {
+        Cluster cluster;
+        float areaRatio = 0.0f;
+        float meanChroma = 0.0f;
+        float visibilityScore = 0.0f;
+        std::string hexColor;
+    };
+
+    std::vector<ScoredCandidate> candidates;
+    for (const auto& c : active)
+    {
+        float areaRatio = static_cast<float>(c.count) / static_cast<float>(totalOpaque);
+        float chroma = c.Chroma();
+
+        // Anti-noise gate: keep genuine accents occupying >= 1.2% area (28 pixels)
+        if (areaRatio >= 0.012f)
+        {
+            float visScore = std::pow(areaRatio, 0.35f) * (0.05f + 3.0f * chroma);
+            RGB rgb = c.CentroidRGB();
+            char hexBuf[16];
+            snprintf(hexBuf, sizeof(hexBuf), "#%02X%02X%02X",
+                     static_cast<int>(rgb.r * 255.0f + 0.5f),
+                     static_cast<int>(rgb.g * 255.0f + 0.5f),
+                     static_cast<int>(rgb.b * 255.0f + 0.5f));
+
+            ScoredCandidate sc;
+            sc.cluster = c;
+            sc.areaRatio = areaRatio;
+            sc.meanChroma = chroma;
+            sc.visibilityScore = visScore;
+            sc.hexColor = hexBuf;
+            candidates.push_back(sc);
+        }
+        else if (outDiag)
+        {
+            // Log anti-noise rejection
+            RGB rgb = c.CentroidRGB();
+            char hexBuf[16];
+            snprintf(hexBuf, sizeof(hexBuf), "#%02X%02X%02X",
+                     static_cast<int>(rgb.r * 255.0f + 0.5f),
+                     static_cast<int>(rgb.g * 255.0f + 0.5f),
+                     static_cast<int>(rgb.b * 255.0f + 0.5f));
+            PaletteDiagnostics::CandidateInfo info;
+            info.name = c.name;
+            info.pixelCount = c.count;
+            info.areaRatio = areaRatio;
+            info.meanChroma = chroma;
+            info.visibilityScore = 0.0f;
+            info.hexColor = hexBuf;
+            info.selected = false;
+            info.rejectionReason = "Anti-noise gate: area < 1.2% (" + std::to_string(c.count) + " px)";
+            outDiag->candidates.push_back(info);
+        }
+    }
+
+    // Sort descending by visibility score
+    std::sort(candidates.begin(), candidates.end(), [](const ScoredCandidate& a, const ScoredCandidate& b) {
+        return a.visibilityScore > b.visibilityScore;
+    });
+
+    // Diverse selection using OKLab perceptual distance (Requirement C)
+    constexpr float DIST_THRESH = 0.125f;
+    std::vector<ScoredCandidate> selected;
+
+    for (const auto& cand : candidates)
+    {
+        OKLab ok = cand.cluster.CentroidOKLab();
+        bool isDistinct = true;
+        std::string rejectionReason;
+
+        for (const auto& sel : selected)
+        {
+            float d = DeltaE(ok, sel.cluster.CentroidOKLab());
+            if (d < DIST_THRESH)
+            {
+                isDistinct = false;
+                char buf[128];
+                snprintf(buf, sizeof(buf), "Too close to %s (DeltaE=%.3f < %.3f)",
+                         sel.cluster.name.c_str(), d, DIST_THRESH);
+                rejectionReason = buf;
+                break;
+            }
+        }
+
+        if (outDiag)
+        {
+            PaletteDiagnostics::CandidateInfo info;
+            info.name = cand.cluster.name;
+            info.pixelCount = cand.cluster.count;
+            info.areaRatio = cand.areaRatio;
+            info.meanChroma = cand.meanChroma;
+            info.visibilityScore = cand.visibilityScore;
+            info.hexColor = cand.hexColor;
+            OKLab cOk = cand.cluster.CentroidOKLab();
+            info.oklab[0] = cOk.L; info.oklab[1] = cOk.a; info.oklab[2] = cOk.b;
+            RGB cRgb = cand.cluster.CentroidRGB();
+            info.rgb[0] = cRgb.r; info.rgb[1] = cRgb.g; info.rgb[2] = cRgb.b;
+            info.selected = isDistinct && (selected.size() < 4);
+            info.rejectionReason = rejectionReason;
+            outDiag->candidates.push_back(info);
+        }
+
+        if (isDistinct)
+        {
+            selected.push_back(cand);
+            if (selected.size() == 4)
+            {
+                if (!outDiag) break;
+            }
+        }
+    }
+
+    // Map selected candidates to 4 final colors
+    // Gamut-safe luminance adjustments (Requirement E)
+    RGB finalColors[4] = {};
+    uint32_t numSelected = static_cast<uint32_t>(std::min<size_t>(selected.size(), 4));
+
+    for (uint32_t i = 0; i < numSelected; ++i)
+    {
+        OKLab ok = selected[i].cluster.CentroidOKLab();
+        // Preserve original identity while ensuring minimum visibility for dark tones
+        if (ok.L < 0.15f) ok.L = 0.15f;
+        finalColors[i] = GamutSafeOKLabtoRGB(ok.L, ok.a, ok.b);
+        if (outDiag)
+        {
+            PaletteDiagnostics::CandidateInfo selInfo;
+            selInfo.name = selected[i].cluster.name;
+            selInfo.pixelCount = selected[i].cluster.count;
+            selInfo.areaRatio = selected[i].areaRatio;
+            selInfo.meanChroma = selected[i].meanChroma;
+            selInfo.visibilityScore = selected[i].visibilityScore;
+            selInfo.hexColor = selected[i].hexColor;
+            selInfo.selected = true;
+            selInfo.rgb[0] = finalColors[i].r;
+            selInfo.rgb[1] = finalColors[i].g;
+            selInfo.rgb[2] = finalColors[i].b;
+            outDiag->selected.push_back(selInfo);
+        }
+    }
+
+    // Harmonic derivation if fewer than 4 candidates found
+    if (numSelected == 1)
+    {
+        OKLab ok = selected[0].cluster.CentroidOKLab();
+        float baseL = std::clamp(ok.L, 0.25f, 0.75f);
+        finalColors[1] = GamutSafeOKLabtoRGB(std::max(baseL - 0.18f, 0.14f), ok.a, ok.b);
+        finalColors[2] = GamutSafeOKLabtoRGB(std::min(baseL + 0.18f, 0.88f), ok.a, ok.b);
+        finalColors[3] = GamutSafeOKLabtoRGB(baseL * 0.70f, ok.a * 0.8f, ok.b * 0.8f);
+    }
+    else if (numSelected == 2)
+    {
+        OKLab ok0 = selected[0].cluster.CentroidOKLab();
+        OKLab ok1 = selected[1].cluster.CentroidOKLab();
+        finalColors[2] = GamutSafeOKLabtoRGB((ok0.L + ok1.L) * 0.5f, (ok0.a + ok1.a) * 0.5f, (ok0.b + ok1.b) * 0.5f);
+        finalColors[3] = GamutSafeOKLabtoRGB(std::max(ok0.L - 0.20f, 0.14f), ok0.a, ok0.b);
+    }
+    else if (numSelected == 3)
+    {
+        OKLab ok0 = selected[0].cluster.CentroidOKLab();
+        finalColors[3] = GamutSafeOKLabtoRGB(std::max(ok0.L - 0.20f, 0.14f), ok0.a, ok0.b);
+    }
+
+    // Semantic RimPalette mapping (Requirement F):
+    //   hot    = Color 1: Primary dominant color (highest visibility score, e.g. Violet)
+    //   color2 = Color 2: Secondary contrasting accent (e.g. Red)
+    //   color3 = Color 3: Tertiary distinct accent / luminous highlight (e.g. Cyan)
+    //   deep   = Color 4: Supporting / grounded foundation tone (e.g. Blue/Azure)
+    result.hot[0] = finalColors[0].r;
+    result.hot[1] = finalColors[0].g;
+    result.hot[2] = finalColors[0].b;
+    result.hot[3] = 1.0f;
+
+    result.color2[0] = finalColors[1].r;
+    result.color2[1] = finalColors[1].g;
+    result.color2[2] = finalColors[1].b;
+    result.color2[3] = 1.0f;
+
+    // For slots 3 & 4: the lighter / higher-chroma tone becomes color3 (accent highlight),
+    // and the deeper tone becomes deep (grounded foundation)
+    if (numSelected == 4)
+    {
+        OKLab ok2 = selected[2].cluster.CentroidOKLab();
+        OKLab ok3 = selected[3].cluster.CentroidOKLab();
+        float score2 = ok2.L + ok2.a * 0.2f + std::sqrt(ok2.a * ok2.a + ok2.b * ok2.b);
+        float score3 = ok3.L + ok3.a * 0.2f + std::sqrt(ok3.a * ok3.a + ok3.b * ok3.b);
+
+        int accentIdx = (score3 >= score2) ? 3 : 2;
+        int supportIdx = (score3 >= score2) ? 2 : 3;
+
+        result.color3[0] = finalColors[accentIdx].r;
+        result.color3[1] = finalColors[accentIdx].g;
+        result.color3[2] = finalColors[accentIdx].b;
+        result.color3[3] = 1.0f;
+
+        result.deep[0] = finalColors[supportIdx].r;
+        result.deep[1] = finalColors[supportIdx].g;
+        result.deep[2] = finalColors[supportIdx].b;
+        result.deep[3] = 1.0f;
+    }
+    else
+    {
+        result.color3[0] = finalColors[2].r;
+        result.color3[1] = finalColors[2].g;
+        result.color3[2] = finalColors[2].b;
+        result.color3[3] = 1.0f;
+
+        result.deep[0] = finalColors[3].r;
+        result.deep[1] = finalColors[3].g;
+        result.deep[2] = finalColors[3].b;
+        result.deep[3] = 1.0f;
+    }
+
+    if (numSelected >= 2)
+    {
+        float n0 = static_cast<float>(selected[0].cluster.count);
+        float n1 = static_cast<float>(selected[1].cluster.count);
+        result.balance = std::clamp(n0 / (n0 + n1), 0.25f, 0.75f);
+    }
+    else
+    {
+        result.balance = 0.50f;
     }
 
     result.hasArtwork = true;

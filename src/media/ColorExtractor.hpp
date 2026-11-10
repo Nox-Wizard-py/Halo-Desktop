@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <string>
 #include <vector>
 
 namespace lumn::media
@@ -39,31 +40,48 @@ public:
     // Uses the original LUMN 1.1 hue-binning approach (saturation/brightness weighted).
     static RimPalette ExtractFromRGBA48x48(const uint8_t* rgbaPixels);
 
-    // -------------------------------------------------------------------------
     // Volume-Weighted Median Cut Quantization (VWMC)
-    // -------------------------------------------------------------------------
-    // Extracts exactly 4 mathematically dominant colors from a 48x48 RGBA pixel
-    // buffer without any saturation, brightness, or hue bias.
-    //
-    // Algorithm:
-    //   1. Gather all opaque pixels (alpha >= 128) into a flat pool.
-    //   2. Place the entire pool into one RGB bounding box.
-    //   3. Repeatedly select the box with the most pixels, find its longest
-    //      color axis (max R/G/B spread), sort along that axis, and split at
-    //      the median — yielding two new boxes.
-    //   4. Continue until 4 boxes exist.
-    //   5. Return the per-channel arithmetic mean (centroid) of each box as the
-    //      four output colors, ordered from most-to-least populated.
-    //
-    // The 4 centroids are mapped onto the existing RimPalette slots:
-    //   hot    <- most populated box
-    //   deep   <- second most populated box
-    //   color2 <- third  most populated box
-    //   color3 <- fourth most populated box
-    //   balance is set proportionally from box 1 / (box 1 + box 2) pixel counts
-    //
-    // No pixel is ever discarded for being too dark, too grey, or too muted.
     static RimPalette ExtractMedianCut(const uint8_t* rgbaPixels);
+
+    // -------------------------------------------------------------------------
+    // Perceptual Hue-Binning & Visibility-Weighted Palette Extractor (2026 Engine)
+    // -------------------------------------------------------------------------
+    // Extracts exactly 4 genuine, mathematically dominant & perceptually distinct
+    // colors from a 48x48 RGBA buffer, completely resolving vibrancy bias, artificial
+    // hue boundaries, and monochromatic plasma collapse.
+    //
+    // Features:
+    //  - 12-sector circular hue binning + dedicated neutral/achromatic bin
+    //  - Perceptually similar adjacent bin merging (OKLab DeltaE < 0.08)
+    //  - Adaptive anti-noise gating (preserves genuine accents >= 1.2% area)
+    //  - Visibility scoring: pow(areaRatio, 0.35f) * (0.05f + 3.0f * meanChroma)
+    //  - Diverse selection using OKLab perceptual distance threshold (DeltaE >= 0.125)
+    //  - Gamut-safe, hue-preserving OKLab to sRGB conversion (binary search bisection)
+    //  - Semantic mapping to RimPalette:
+    //      hot    -> Dominant color (highest visibility score)
+    //      color2 -> Secondary contrasting accent
+    //      color3 -> Tertiary distinct accent / luminous highlight
+    //      deep   -> Grounded foundation tone
+    struct PaletteDiagnostics
+    {
+        struct CandidateInfo
+        {
+            std::string name;
+            uint32_t pixelCount = 0;
+            float areaRatio = 0.0f;
+            float meanChroma = 0.0f;
+            float visibilityScore = 0.0f;
+            float oklab[3] = {};
+            float rgb[3] = {};
+            std::string hexColor;
+            bool selected = false;
+            std::string rejectionReason;
+        };
+        std::vector<CandidateInfo> candidates;
+        std::vector<CandidateInfo> selected;
+    };
+
+    static RimPalette ExtractPalette(const uint8_t* rgbaPixels, PaletteDiagnostics* outDiag = nullptr);
 
     // HSB color representation (LUMN native)
     struct HSB
@@ -94,6 +112,7 @@ public:
 
     static OKLab RGBtoOKLab(float r, float g, float b) noexcept;
     static RGB OKLabtoRGB(float L, float a, float b) noexcept;
+    static RGB GamutSafeOKLabtoRGB(float L, float a, float b) noexcept;
     static float DeltaE(const OKLab& c1, const OKLab& c2) noexcept;
 
     static float sRGBtoLinear(float c) noexcept;

@@ -314,7 +314,7 @@ void MediaSessionWatcher::WorkerThreadFunc()
                                 hr = pPaletteConverter->CopyPixels(nullptr, ColorExtractor::DOWNSAMPLE_WIDTH * 4, static_cast<UINT>(pixelBuffer.size()), pixelBuffer.data());
                                 if (SUCCEEDED(hr))
                                 {
-                                    outPalette = ColorExtractor::ExtractMedianCut(pixelBuffer.data());
+                                    outPalette = ColorExtractor::ExtractPalette(pixelBuffer.data());
                                     success = true;
                                 }
                             }
