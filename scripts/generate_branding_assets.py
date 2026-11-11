@@ -2,7 +2,7 @@ import os
 from PIL import Image
 
 def generate_assets():
-    source_path = r'C:/Users/hossa/.gemini/antigravity/brain/4ae8c152-9180-455e-92d7-608a09bb7a92/.user_uploaded/media_1794216202854_a39f18c9.jpg'
+    source_path = r'C:/Users/hossa/.gemini/antigravity/brain/4ae8c152-9180-455e-92d7-608a09bb7a92/.user_uploaded/media_1794402303094_701331c5.jpg'
     output_dir = os.path.abspath('resources/icons')
     os.makedirs(output_dir, exist_ok=True)
 
