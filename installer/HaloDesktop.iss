@@ -14,10 +14,16 @@
 #endif
 
 #define MyAppName "Halo Desktop"
-#define MyAppVersion "1.0.0"
+#ifndef MyAppVersion
+  #define MyAppVersion "1.0.0"
+#endif
 #define MyAppPublisher "Halo Desktop Team"
 #define MyAppExeName "LumnOverlay.exe"
 #define MyAppId "{{E794D024-C272-4B6E-AE21-08579FF48E44}"
+
+#ifndef OutputBaseFilename
+  #define OutputBaseFilename "Halo-Desktop-Setup-" + AppArch
+#endif
 
 [Setup]
 AppId={#MyAppId}
@@ -29,7 +35,7 @@ DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 LicenseFile=..\LICENSE
 OutputDir={#OutputDir}
-OutputBaseFilename=Halo-Desktop-Setup-{#AppArch}
+OutputBaseFilename={#OutputBaseFilename}
 SetupIconFile=..\resources\icons\halo.ico
 UninstallDisplayIcon={app}\{#MyAppExeName}
 Compression=lzma2/ultra64
