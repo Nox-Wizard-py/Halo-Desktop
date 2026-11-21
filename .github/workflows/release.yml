@@ -1,0 +1,371 @@
+name: Release Halo Desktop
+
+"on":
+  workflow_dispatch:
+    inputs:
+      draft:
+        description: 'Publish release as Draft'
+        required: false
+        type: boolean
+        default: false
+      prerelease:
+        description: 'Mark release as Pre-release'
+        required: false
+        type: boolean
+        default: false
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  # =========================================================================
+  # 1. Prepare: Parse Version, Validate Git Tag & Extract Release Notes
+  # =========================================================================
+  prepare:
+    name: Prepare Release Metadata
+    runs-on: windows-2022
+    outputs:
+      version: ${{ steps.metadata.outputs.version }}
+      tag: ${{ steps.metadata.outputs.tag }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Parse Version & Validate Tag
+        id: metadata
+        shell: powershell
+        run: |
+          # 1. Parse APP_VERSION from .github/workflows/build.yml
+          $buildYmlPath = ".github/workflows/build.yml"
+          if (-not (Test-Path $buildYmlPath)) {
+              Write-Error "Build configuration file not found at '$buildYmlPath'"
+              exit 1
+          }
+
+          $buildYml = Get-Content -Raw $buildYmlPath
+          $pattern = '(?m)^\s*APP_VERSION:\s*[''"]?([^''"\r\n]+)[''"]?'
+          $match = [regex]::Match($buildYml, $pattern)
+          if (-not $match.Success) {
+              Write-Error "Could not find 'APP_VERSION' under 'env' in '$buildYmlPath'. Please define 'APP_VERSION: ''X.Y.Z'' under env'."
+              exit 1
+          }
+
+          $rawVersion = $match.Groups[1].Value.Trim()
+          if ($rawVersion -notmatch '^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$') {
+              Write-Error "Parsed version '$rawVersion' from $buildYmlPath does not adhere to Semantic Versioning (e.g., 1.0.0 or 1.0.0-rc1)."
+              exit 1
+          }
+
+          $version = $rawVersion
+          $tag = "v$version"
+          Write-Host "Resolved application version : $version"
+          Write-Host "Target Git release tag       : $tag"
+
+          # 2. Check if the Git tag already exists
+          git fetch --tags --force
+          $existingTag = git tag -l $tag
+          if ($existingTag) {
+              Write-Error "Git tag '$tag' already exists! Please bump 'APP_VERSION' in '$buildYmlPath' before triggering a new release."
+              exit 1
+          }
+          Write-Host "Tag check passed: '$tag' is novel."
+
+          # 3. Extract version-specific section from release notes.md
+          $notesPath = "release notes.md"
+          if (-not (Test-Path $notesPath)) {
+              if (Test-Path "RELEASE_NOTES.md") { $notesPath = "RELEASE_NOTES.md" }
+              elseif (Test-Path "releasenotes.md") { $notesPath = "releasenotes.md" }
+              else {
+                  Write-Error "Release notes file '$notesPath' was not found in the repository root."
+                  exit 1
+              }
+          }
+
+          $notesContent = Get-Content -Raw $notesPath -Encoding UTF8
+          # Match heading formats: ## [1.0.0], ## [v1.0.0], ## 1.0.0, ## v1.0.0 (with optional subtitle/date)
+          $notesPattern = '(?m)^##\s+\[?v?' + [regex]::Escape($version) + '\]?(?:[^\r\n]*)\r?\n([\s\S]*?)(?=^##\s|\Z)'
+          $notesMatch = [regex]::Match($notesContent, $notesPattern)
+          if (-not $notesMatch.Success) {
+              Write-Error "Could not find release notes section for version '$version' (e.g. '## [$version]') in '$notesPath'."
+              exit 1
+          }
+
+          $body = $notesMatch.Groups[1].Value.Trim()
+          if ([string]::IsNullOrWhiteSpace($body)) {
+              Write-Error "Release notes section for version '$version' in '$notesPath' is empty."
+              exit 1
+          }
+
+          Write-Host "Extracted release notes for $tag ($($body.Length) chars)."
+          [System.IO.File]::WriteAllText("RELEASE_BODY.md", $body, [System.Text.Encoding]::UTF8)
+
+          # Export step outputs
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - name: Upload Release Notes Body
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-body
+          path: RELEASE_BODY.md
+          retention-days: 1
+
+  # =========================================================================
+  # 2. Build: Multi-Architecture Native Windows Compilation & Packaging
+  # =========================================================================
+  build:
+    name: Build ${{ matrix.arch_display }} (${{ matrix.arch }})
+    needs: prepare
+    runs-on: windows-2022
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            arch_display: x86_64 (AMD64)
+            cmake_arch: x64
+            run_tests: true
+          - arch: arm64
+            arch_display: ARM64
+            cmake_arch: ARM64
+            run_tests: false
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure CMake (${{ matrix.arch_display }})
+        shell: powershell
+        run: |
+          cmake -B build -G "Visual Studio 17 2022" -A ${{ matrix.cmake_arch }}
+          if ($LASTEXITCODE -ne 0) {
+              Write-Host "Visual Studio 17 2022 generator not found; falling back to runner default Visual Studio generator..."
+              Remove-Item -Recurse -Force build -ErrorAction SilentlyContinue
+              cmake -B build -A ${{ matrix.cmake_arch }}
+              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+
+      - name: Build Halo Desktop (${{ matrix.arch }})
+        run: |
+          cmake --build build --config Release --target LumnOverlay
+
+      - name: Build Automated Tests (${{ matrix.arch }})
+        if: matrix.run_tests
+        run: |
+          cmake --build build --config Release --target LumnVerification
+
+      - name: Run Automated Verification Tests (x64 only)
+        if: matrix.run_tests
+        run: |
+          .\build\Release\LumnVerification.exe
+
+      - name: Verify Binary Architecture (${{ matrix.arch }})
+        shell: powershell
+        run: |
+          $exePath = "build/Release/LumnOverlay.exe"
+          if (-not (Test-Path $exePath)) {
+              Write-Error "Compiled executable not found at: $exePath"
+              exit 1
+          }
+          $bytes = [System.IO.File]::ReadAllBytes($exePath)
+          $peOffset = [System.BitConverter]::ToUInt32($bytes, 0x3C)
+          $machine = [System.BitConverter]::ToUInt16($bytes, $peOffset + 4)
+          $expectedArch = "${{ matrix.arch }}"
+          if ($expectedArch -eq "arm64") {
+              if ($machine -ne 0xAA64) {
+                  Write-Error "Machine type 0x$($machine.ToString('X4')) does not match expected ARM64 (0xAA64)."
+                  exit 1
+              }
+              Write-Host "Successfully verified authentic Windows ARM64 PE executable (Machine=0xAA64)."
+          } elseif ($expectedArch -eq "x64") {
+              if ($machine -ne 0x8664) {
+                  Write-Error "Machine type 0x$($machine.ToString('X4')) does not match expected x64 AMD64 (0x8664)."
+                  exit 1
+              }
+              Write-Host "Successfully verified authentic Windows x64 AMD64 PE executable (Machine=0x8664)."
+          }
+
+      - name: Package Release ZIP (${{ matrix.arch }})
+        shell: powershell
+        run: |
+          $version = "${{ needs.prepare.outputs.version }}"
+          $stageDir = "dist/staging"
+          if (Test-Path $stageDir) { Remove-Item -Recurse -Force $stageDir }
+          New-Item -ItemType Directory -Path "$stageDir/licenses" -Force | Out-Null
+          New-Item -ItemType Directory -Path "dist" -Force | Out-Null
+
+          # Copy main application executable
+          Copy-Item "build/Release/LumnOverlay.exe" $stageDir
+
+          # Copy automated verification test binary if built (x64)
+          if (Test-Path "build/Release/LumnVerification.exe") {
+              Copy-Item "build/Release/LumnVerification.exe" $stageDir
+          }
+
+          # Copy required runtime HLSL shaders
+          Copy-Item "src/render/shaders/plasmaRim.hlsl" $stageDir
+          Copy-Item "src/render/shaders/liquidGlass.hlsl" $stageDir
+          Copy-Item "src/render/shaders/glassmorphism.hlsl" $stageDir
+
+          # Copy licence and notices
+          Copy-Item "LICENSE" $stageDir
+          Copy-Item "THIRD_PARTY_NOTICES.md" $stageDir
+          Copy-Item "licenses/Apache-2.0.txt" "$stageDir/licenses"
+
+          # Create versioned release ZIP
+          $zipPath = "dist/Halo-Desktop-v$version-windows-${{ matrix.arch }}.zip"
+          Compress-Archive -Path "$stageDir/*" -DestinationPath $zipPath -Force
+          Write-Host "Packaged ZIP: $zipPath ($( (Get-Item $zipPath).Length ) bytes)"
+
+      - name: Validate Packaged ZIP (${{ matrix.arch }})
+        shell: powershell
+        run: |
+          $version = "${{ needs.prepare.outputs.version }}"
+          $zipPath = "dist/Halo-Desktop-v$version-windows-${{ matrix.arch }}.zip"
+          if (-not (Test-Path $zipPath) -or (Get-Item $zipPath).Length -le 0) {
+              Write-Error "Packaged ZIP file is missing or empty: $zipPath"
+              exit 1
+          }
+          Write-Host "Verified valid portable ZIP archive: $zipPath"
+
+      - name: Install Inno Setup
+        shell: powershell
+        run: |
+          $isccCmd = Get-Command iscc -ErrorAction SilentlyContinue
+          if (-not $isccCmd -and -not (Test-Path "C:\Program Files (x86)\Inno Setup 6\ISCC.exe")) {
+              Write-Host "Installing Inno Setup via Chocolatey..."
+              choco install innosetup --no-progress -y
+          }
+
+      - name: Compile Windows Installer (${{ matrix.arch }})
+        shell: powershell
+        run: |
+          $version = "${{ needs.prepare.outputs.version }}"
+          $isccPath = $null
+          $isccCmd = Get-Command iscc -ErrorAction SilentlyContinue
+          if ($isccCmd) {
+              $isccPath = $isccCmd.Source
+          } else {
+              $candidates = @(
+                  "C:\Program Files (x86)\Inno Setup 6\ISCC.exe",
+                  "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe"
+              )
+              foreach ($cand in $candidates) {
+                  if (Test-Path $cand) { $isccPath = $cand; break }
+              }
+          }
+          if (-not $isccPath) {
+              Write-Error "ISCC.exe (Inno Setup Compiler) was not found."
+              exit 1
+          }
+          Write-Host "Using Inno Setup compiler: $isccPath"
+
+          $installerBase = "Halo-Desktop-Setup-v$version-${{ matrix.arch }}"
+          & $isccPath /DAppArch=${{ matrix.arch }} "/DMyAppVersion=$version" "/DOutputBaseFilename=$installerBase" "/DSourceDir=..\build\Release" "/DOutputDir=..\dist" installer\HaloDesktop.iss
+          if ($LASTEXITCODE -ne 0) {
+              Write-Error "Inno Setup compilation failed with exit code $LASTEXITCODE"
+              exit $LASTEXITCODE
+          }
+
+      - name: Validate Installer Package (${{ matrix.arch }})
+        shell: powershell
+        run: |
+          $version = "${{ needs.prepare.outputs.version }}"
+          $installerPath = "dist/Halo-Desktop-Setup-v$version-${{ matrix.arch }}.exe"
+          if (-not (Test-Path $installerPath) -or (Get-Item $installerPath).Length -le 0) {
+              Write-Error "Installer executable is missing or empty: $installerPath"
+              exit 1
+          }
+          Write-Host "Windows Installer verified: $installerPath ($( (Get-Item $installerPath).Length ) bytes)"
+
+      - name: Upload Architecture Artifacts (${{ matrix.arch }})
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-artifacts-${{ matrix.arch }}
+          path: |
+            dist/Halo-Desktop-v${{ needs.prepare.outputs.version }}-windows-${{ matrix.arch }}.zip
+            dist/Halo-Desktop-Setup-v${{ needs.prepare.outputs.version }}-${{ matrix.arch }}.exe
+          retention-days: 1
+          if-no-files-found: error
+
+  # =========================================================================
+  # 3. Publish: Create Git Tag, Compute Checksums & Publish GitHub Release
+  # =========================================================================
+  publish:
+    name: Publish GitHub Release
+    needs: [prepare, build]
+    runs-on: windows-2022
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download Release Notes Body
+        uses: actions/download-artifact@v4
+        with:
+          name: release-body
+          path: .
+
+      - name: Download x64 Build Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: release-artifacts-x64
+          path: release_assets
+
+      - name: Download ARM64 Build Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: release-artifacts-arm64
+          path: release_assets
+
+      - name: Generate Checksums & Create Git Tag
+        shell: powershell
+        run: |
+          $version = "${{ needs.prepare.outputs.version }}"
+          $tag = "${{ needs.prepare.outputs.tag }}"
+
+          # 1. Generate SHA256 checksums
+          Write-Host "Computing SHA256 hashes for release assets..."
+          $assets = Get-ChildItem -Path release_assets -File
+          $hashLines = @()
+          foreach ($file in $assets) {
+              $hash = (Get-FileHash -Path $file.FullName -Algorithm SHA256).Hash.ToLower()
+              $hashLines += "$hash  $($file.Name)"
+              Write-Host "  $($file.Name): $hash"
+          }
+          $hashFilePath = "release_assets/SHA256SUMS.txt"
+          [System.IO.File]::WriteAllLines($hashFilePath, $hashLines, [System.Text.Encoding]::ASCII)
+          Write-Host "Generated $hashFilePath"
+
+          # 2. Create and push annotated Git tag
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          Write-Host "Creating Git tag $tag pointing to ${{ github.sha }}..."
+          git tag -a $tag -m "Release $tag"
+          git push origin $tag
+          Write-Host "Successfully pushed tag $tag to remote."
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.prepare.outputs.tag }}
+          name: Halo Desktop v${{ needs.prepare.outputs.version }}
+          body_path: RELEASE_BODY.md
+          draft: ${{ inputs.draft }}
+          prerelease: ${{ inputs.prerelease }}
+          files: |
+            release_assets/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
