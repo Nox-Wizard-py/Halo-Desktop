@@ -88,6 +88,9 @@ void MediaCardRenderer::Shutdown()
     m_backdropSampler.Shutdown();
 
     m_artworkBitmap.Reset();
+    m_artworkBitmapBrush.Reset();
+    m_artworkBackingBrush.Reset();
+    m_artworkBorderBrush.Reset();
     m_cardBgBrush.Reset();
     m_cardBorderBrush.Reset();
     m_solidFillBrush.Reset();
@@ -280,6 +283,8 @@ bool MediaCardRenderer::CreateDirect2D()
     m_d2dContext->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.25f), &m_btnPressedBrush);
     m_d2dContext->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.92f), &m_btnIconBrush);
     m_d2dContext->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.25f), &m_btnDisabledBrush);
+    m_d2dContext->CreateSolidColorBrush(D2D1::ColorF(0.06f, 0.07f, 0.09f, 0.85f), &m_artworkBackingBrush);
+    m_d2dContext->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.18f), &m_artworkBorderBrush);
 
     // 1. Smoked Glass Base Brush (Vertical: translucent dark substrate)
     D2D1_GRADIENT_STOP baseStops[2];
@@ -1056,13 +1061,14 @@ void MediaCardRenderer::RenderSolidPass(const media::MediaTrackInfo& trackInfo)
 
 void MediaCardRenderer::UpdateArtworkBitmap(const media::MediaTrackInfo& trackInfo)
 {
-    if (trackInfo.generation == m_artworkGeneration)
+    if (trackInfo.generation == m_artworkGeneration && m_artworkBitmap && m_artworkBitmapBrush)
     {
         return;
     }
 
     m_artworkGeneration = trackInfo.generation;
     m_artworkBitmap.Reset();
+    m_artworkBitmapBrush.Reset();
 
     if (!trackInfo.hasArtwork || trackInfo.cardArtworkRGBA.empty() ||
         trackInfo.cardArtworkWidth == 0 || trackInfo.cardArtworkHeight == 0)
@@ -1077,13 +1083,27 @@ void MediaCardRenderer::UpdateArtworkBitmap(const media::MediaTrackInfo& trackIn
     D2D1_SIZE_U size = D2D1::SizeU(trackInfo.cardArtworkWidth, trackInfo.cardArtworkHeight);
     UINT32 pitch = trackInfo.cardArtworkWidth * 4;
 
-    m_d2dContext->CreateBitmap(
+    HRESULT hr = m_d2dContext->CreateBitmap(
         size,
         trackInfo.cardArtworkRGBA.data(),
         pitch,
         &props,
         &m_artworkBitmap
     );
+
+    if (SUCCEEDED(hr) && m_artworkBitmap)
+    {
+        D2D1_BITMAP_BRUSH_PROPERTIES brushProps = D2D1::BitmapBrushProperties(
+            D2D1_EXTEND_MODE_CLAMP,
+            D2D1_EXTEND_MODE_CLAMP,
+            D2D1_BITMAP_INTERPOLATION_MODE_LINEAR
+        );
+        m_d2dContext->CreateBitmapBrush(
+            m_artworkBitmap.Get(),
+            brushProps,
+            &m_artworkBitmapBrush
+        );
+    }
 }
 
 void MediaCardRenderer::UpdateDynamicPaletteBrushes(const media::MediaTrackInfo& trackInfo)
@@ -1171,6 +1191,16 @@ void MediaCardRenderer::DrawPlaceholderArtwork(const D2D1_RECT_F& rect)
     m_d2dContext->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(cx, cy), 24.0f, 24.0f), glyphBrush.Get(), 2.5f);
     // Center spindle hole
     m_d2dContext->FillEllipse(D2D1::Ellipse(D2D1::Point2F(cx, cy), 6.0f, 6.0f), glyphBrush.Get());
+
+    // Subtle thin inner border for artwork definition (12.0f radius)
+    if (!m_artworkBorderBrush)
+    {
+        m_d2dContext->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.18f), &m_artworkBorderBrush);
+    }
+    if (m_artworkBorderBrush)
+    {
+        m_d2dContext->DrawRoundedRectangle(rrect, m_artworkBorderBrush.Get(), 1.0f);
+    }
 }
 
 void MediaCardRenderer::DrawVectorControls(const media::MediaTrackInfo& trackInfo,
@@ -1566,34 +1596,67 @@ void MediaCardRenderer::Render(const media::MediaTrackInfo& trackInfo,
 
     // 3. Album Artwork Thumbnail (Left Side, 108x108 at (16, 16))
     D2D1_RECT_F artRect = D2D1::RectF(16.0f, 16.0f, 124.0f, 124.0f);
+    D2D1_ROUNDED_RECT artRRect = D2D1::RoundedRect(artRect, 12.0f, 12.0f);
 
-    // Subtle dark under-shadow for artwork recess
-    D2D1_ROUNDED_RECT artShadow = D2D1::RoundedRect(
-        D2D1::RectF(16.0f, 17.5f, 124.0f, 125.5f),
-        12.0f, 12.0f
-    );
-    if (m_cardShadowBrush)
+    // Dark backing recess fill matching the exact 12.0f corner radius (zero corner mismatch)
+    if (!m_artworkBackingBrush)
     {
-        m_d2dContext->FillRoundedRectangle(artShadow, m_cardShadowBrush.Get());
+        m_d2dContext->CreateSolidColorBrush(D2D1::ColorF(0.06f, 0.07f, 0.09f, 0.85f), &m_artworkBackingBrush);
+    }
+    if (m_artworkBackingBrush)
+    {
+        m_d2dContext->FillRoundedRectangle(artRRect, m_artworkBackingBrush.Get());
     }
 
     if (m_artworkBitmap)
     {
-        // Clipped rounded rectangle for artwork
-        D2D1_ROUNDED_RECT artRRect = D2D1::RoundedRect(artRect, 12.0f, 12.0f);
-        m_d2dContext->PushAxisAlignedClip(artRect, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
-        m_d2dContext->DrawBitmap(
-            m_artworkBitmap.Get(),
-            artRect,
-            1.0f,
-            D2D1_BITMAP_INTERPOLATION_MODE_LINEAR
-        );
-        m_d2dContext->PopAxisAlignedClip();
+        if (!m_artworkBitmapBrush)
+        {
+            D2D1_BITMAP_BRUSH_PROPERTIES brushProps = D2D1::BitmapBrushProperties(
+                D2D1_EXTEND_MODE_CLAMP,
+                D2D1_EXTEND_MODE_CLAMP,
+                D2D1_BITMAP_INTERPOLATION_MODE_LINEAR
+            );
+            m_d2dContext->CreateBitmapBrush(
+                m_artworkBitmap.Get(),
+                brushProps,
+                &m_artworkBitmapBrush
+            );
+        }
 
-        // Subtle thin inner border for artwork definition
-        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> artBorder;
-        m_d2dContext->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.18f), &artBorder);
-        m_d2dContext->DrawRoundedRectangle(artRRect, artBorder.Get(), 1.0f);
+        if (m_artworkBitmapBrush)
+        {
+            // Map the source image buffer uniformly into artRect with aspect-preserving center-crop
+            D2D1_SIZE_F bitmapSize = m_artworkBitmap->GetSize();
+            if (bitmapSize.width > 0.0f && bitmapSize.height > 0.0f)
+            {
+                float artWidth = artRect.right - artRect.left;
+                float artHeight = artRect.bottom - artRect.top;
+                float scale = (std::max)(artWidth / bitmapSize.width, artHeight / bitmapSize.height);
+                float cropW = bitmapSize.width * scale;
+                float cropH = bitmapSize.height * scale;
+                float offsetX = artRect.left + (artWidth - cropW) * 0.5f;
+                float offsetY = artRect.top + (artHeight - cropH) * 0.5f;
+
+                m_artworkBitmapBrush->SetTransform(
+                    D2D1::Matrix3x2F::Scale(scale, scale) *
+                    D2D1::Matrix3x2F::Translation(offsetX, offsetY)
+                );
+            }
+
+            // Fill rounded rectangle with analytic edge anti-aliasing (strictly clipped to 12.0f radius)
+            m_d2dContext->FillRoundedRectangle(artRRect, m_artworkBitmapBrush.Get());
+        }
+
+        // Subtle thin inner border for artwork definition (matching 12.0f radius)
+        if (!m_artworkBorderBrush)
+        {
+            m_d2dContext->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.18f), &m_artworkBorderBrush);
+        }
+        if (m_artworkBorderBrush)
+        {
+            m_d2dContext->DrawRoundedRectangle(artRRect, m_artworkBorderBrush.Get(), 1.0f);
+        }
     }
     else
     {

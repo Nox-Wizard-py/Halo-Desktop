@@ -190,6 +190,9 @@ private:
 
     // Artwork cache
     Microsoft::WRL::ComPtr<ID2D1Bitmap> m_artworkBitmap;
+    Microsoft::WRL::ComPtr<ID2D1BitmapBrush> m_artworkBitmapBrush;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_artworkBackingBrush;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_artworkBorderBrush;
     uint64_t m_artworkGeneration = 0;
 
     // Brushes
