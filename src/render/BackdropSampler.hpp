@@ -17,7 +17,7 @@ namespace lumn::render
 
 // Phase 4B.1: Localized Desktop Backdrop Sampler
 // Captures only the rectangular bounding region directly behind the floating media card.
-// Uses WDA_NONE display affinity so the window remains capturable in standard screenshots,
+// Uses SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE) to guarantee zero recursive feedback,
 // and maps pixels to a dynamic D3D11 texture for real-time liquid glass refraction.
 class BackdropSampler
 {
