@@ -70,7 +70,13 @@ void TestBackdropCaptureExclusion()
     assert(captureOk);
     (void)captureOk;
 
-    std::cout << "  -> PASSED: Backdrop capture successfully executed with WDA_EXCLUDEFROMCAPTURE.\n\n";
+    DWORD affinity = 0xFFFFFFFF;
+    BOOL affOk = GetWindowDisplayAffinity(hWnd, &affinity);
+    assert(affOk && affinity == WDA_NONE);
+    (void)affOk;
+    std::cout << "  diag: DisplayAffinity=" << affinity << " (WDA_NONE: screenshot capturable)\n";
+
+    std::cout << "  -> PASSED: Backdrop capture executed with WDA_NONE (standard screenshot capture guaranteed).\n\n";
 
     sampler.Shutdown();
     DestroyWindow(hWnd);
