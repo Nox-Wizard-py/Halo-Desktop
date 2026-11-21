@@ -206,10 +206,8 @@ bool MediaCardWindow::Initialize(HINSTANCE hInstance, std::shared_ptr<media::Med
     COLORREF borderColor = 0xFFFFFFFE; // DWMWA_COLOR_NONE (suppress Windows 11 system border)
     DwmSetWindowAttribute(m_hWnd, 34 /* DWMWA_BORDER_COLOR */, &borderColor, sizeof(borderColor));
 
-    // Exclude the media card window from screen capture APIs (WDA_EXCLUDEFROMCAPTURE = 0x11)
-    // to prevent infinite optical feedback recursion when sampling desktop backdrops.
-    constexpr DWORD WDA_EXCLUDE_FROM_CAPTURE = 0x00000011;
-    SetWindowDisplayAffinity(m_hWnd, WDA_EXCLUDE_FROM_CAPTURE);
+    // Ensure display affinity allows standard screenshots and recording (WDA_NONE = 0)
+    SetWindowDisplayAffinity(m_hWnd, WDA_NONE);
 
     if (!m_renderer.Initialize(m_hWnd))
     {
