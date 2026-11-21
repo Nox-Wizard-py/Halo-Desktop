@@ -268,12 +268,22 @@ void MediaSessionWatcher::WorkerThreadFunc()
                         hr = pWicFactory->CreateFormatConverter(&pCardConverter);
                         if (SUCCEEDED(hr))
                         {
+                            // Prefer Premultiplied RGBA for Direct2D D2D1_ALPHA_MODE_PREMULTIPLIED compatibility
                             hr = pCardConverter->Initialize(
                                 pCardScaler,
-                                GUID_WICPixelFormat32bppRGBA,
+                                GUID_WICPixelFormat32bppPRGBA,
                                 WICBitmapDitherTypeNone,
                                 nullptr, 0.0, WICBitmapPaletteTypeCustom
                             );
+                            if (FAILED(hr))
+                            {
+                                hr = pCardConverter->Initialize(
+                                    pCardScaler,
+                                    GUID_WICPixelFormat32bppRGBA,
+                                    WICBitmapDitherTypeNone,
+                                    nullptr, 0.0, WICBitmapPaletteTypeCustom
+                                );
+                            }
                             if (SUCCEEDED(hr))
                             {
                                 outCardArtwork.resize(256 * 256 * 4);

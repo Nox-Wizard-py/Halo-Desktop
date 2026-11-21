@@ -27,13 +27,12 @@ bool BackdropSampler::Initialize(ID3D11Device* device, HWND hWnd, uint32_t width
     uint32_t totalWidth = m_width + 2 * m_margin;
     uint32_t totalHeight = m_height + 2 * m_margin;
 
-    // 1. Exclude the media card window from screen capture APIs
-    // WDA_EXCLUDEFROMCAPTURE = 0x00000011 (Windows 10 2004 / Windows 11 Build 19041+)
-    // This allows BitBlt and DirectX capture to sample the desktop behind the card without feedback recursion.
+    // 1. Ensure window display affinity allows screen capture (WDA_NONE = 0)
+    // Avoid WDA_EXCLUDEFROMCAPTURE which prevents Snipping Tool (Win+Shift+S),
+    // OBS, and standard screen capture APIs from recording the media card.
     if (hWnd)
     {
-        constexpr DWORD WDA_EXCLUDE_FROM_CAPTURE = 0x00000011;
-        SetWindowDisplayAffinity(hWnd, WDA_EXCLUDE_FROM_CAPTURE);
+        SetWindowDisplayAffinity(hWnd, WDA_NONE);
     }
 
     // 2. Initialize GDI Memory DC and 32-bit Top-Down DIB Section
